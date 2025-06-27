@@ -1,5 +1,5 @@
 name: astrbot_plugin_soushuba # 这是你的插件的唯一识别名。
-desc: 轻松获取搜书网站最新链接，告别失效烦恼。 # 插件简短描述
+desc: 轻松获取搜书吧最新链接，告别失联烦恼。 # 插件简短描述
 version: v1.0 # 插件版本号。格式：v1.1.1 或者 v1.1
 author: Foolllll # 作者
 repo: https://github.com/Foolllll-J/astrbot_plugin_soushuba # 插件的仓库地址
