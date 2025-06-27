@@ -1,10 +1,10 @@
 ## 💡 简介
 
-本插件是为 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 项目开发的，旨在帮助用户**快速获取搜书网站的最新可用链接**。它能自动遍历备用域名，告别链接失效的烦恼，一键直达搜书资源。
+本插件是为 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 项目开发的，旨在帮助用户**快速获取搜书吧的最新可用链接**。它能自动遍历备用域名，告别链接失效的烦恼，一键直达搜书资源。
 
 ## ✨ 特性
 
-* **智能重试**：自动遍历预设的搜书域名列表，找到第一个可访问的网站。
+* **智能重试**：自动遍历预设的搜书吧域名列表，找到第一个可访问的网站。
 * **链接提取**：从成功访问的网页中智能提取目标链接。
 * **简单易用**：通过简单的命令即可操作。
 
@@ -20,21 +20,7 @@
 
 ## ⚙️ 配置说明
 
-插件的网址列表在源代码中硬编码于 `WebLinkExtractorPlugin` 类的 `self.target_domains` 变量中，你可以根据需要自行修改：
-
-**Python**
-
-```
-class WebLinkExtractorPlugin(Star):
-    def __init__(self, context: Context, config=None):
-        super().__init__(context)
-        self.target_domains: List[str] = [
-            "https://soushu2022.com",
-            "https://soushu2025.com",
-            "https://soushu2030.com",
-            "https://soushu2035.com",
-        ]
-```
+插件的网址列表在源代码中硬编码于 `SoushuBaLinkExtractorPlugin` 类的 `self.target_domains` 变量中，你可以根据需要自行修改。
 
 ## 📄 许可证
 

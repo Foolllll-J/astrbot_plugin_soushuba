@@ -113,7 +113,7 @@ class SoushuBaLinkExtractorPlugin(Star):
         用法: /ssb
         """
         logger.info(f"用户 {event.get_sender_name()} 触发 /ssb 命令，开始搜书。")
-        yield event.plain_result("🚀 正在尝试访问搜书网站，请稍候...")
+        yield event.plain_result("🚀 正在尝试查找搜书吧网址，请稍候...")
         
         async with aiohttp.ClientSession() as session:
             for domain_url in self.target_domains:
