@@ -12,8 +12,6 @@ from astrbot.api.message_components import Plain
 from astrbot.api import logger
 from astrbot.core.config import AstrBotConfig
 
-DEFAULT_SXSY_HOST = "sxsy19.com" # 默认域名
-
 @register(
     "astrbot_plugin_soushuba",
     "Foolllll",
@@ -111,12 +109,10 @@ class SoushuBaLinkExtractorPlugin(Star):
                             host = match.group(1)
                             yield event.plain_result(f"🌸 成功找到尚香书苑最新网址：\nhttps://{host}")
                             return
-                    
-                    yield event.plain_result(f"🌸 尚香书苑最新网址：\nhttps://{DEFAULT_SXSY_HOST}")
-
             except Exception as e:
                 logger.error(f"[获取sxsy host] 发生错误: {e}")
-                yield event.plain_result(f"🌸 尚香书苑目前网址：\nhttps://{DEFAULT_SXSY_HOST}")
+            
+        yield event.plain_result("❌ 抱歉，尚香书苑导航站目前无法访问。")
 
     @filter.command("sis", alias={'第一会所'})
     async def sis_command(self, event: AstrMessageEvent):
@@ -138,7 +134,6 @@ class SoushuBaLinkExtractorPlugin(Star):
                         if response.status == 200:
                             text = await response.text()
                             soup = BeautifulSoup(text, 'lxml')
-                            # 查找包含“地址一”文本的 <a> 标签
                             link_element = soup.find('a', string=re.compile(r'地址一'))
                             if link_element and link_element.has_attr('href'):
                                 link_url = link_element['href']
@@ -149,6 +144,70 @@ class SoushuBaLinkExtractorPlugin(Star):
                     continue
             
         yield event.plain_result("❌ 抱歉，第一会所导航站目前无法访问。")
+
+    @filter.command("01bz", alias={'第一版主'})
+    async def dybz_command(self, event: AstrMessageEvent):
+        """
+        获取第一版主的网址。
+        用法: /01bz
+        """
+        logger.info(f"用户 {event.get_sender_name()} 触发 /01bz 命令，开始查找第一版主网址。")
+        
+        target_navs = ["https://www.龙腾小说.com/", "http://01bz.cc/"]
+        
+        async with aiohttp.ClientSession() as session:
+            for url in target_navs:
+                try:
+                    headers = {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36 Edg/137.0.0.0',
+                    }
+                    async with session.get(url, headers=headers, timeout=10) as response:
+                        if response.status == 200:
+                            text = await response.text()
+                            soup = BeautifulSoup(text, 'lxml')
+                            link_element = soup.find('a', string=re.compile(r'最新线路\s*1'))
+                            if link_element and link_element.has_attr('href'):
+                                link_url = link_element['href']
+                                yield event.plain_result(f"📚 成功找到第一版主最新网址：\n{link_url}")
+                                return
+                except Exception as e:
+                    logger.error(f"访问 {url} 失败: {e}")
+                    continue
+            
+        yield event.plain_result("❌ 抱歉，第一版主导航站目前无法访问。")
+
+    @filter.command("uaa", alias={'有爱爱'})
+    async def uaa_command(self, event: AstrMessageEvent):
+        """
+        获取有爱爱的网址。
+        用法: /uaa
+        """
+        logger.info(f"用户 {event.get_sender_name()} 触发 /uaa 命令，开始查找有爱爱网址。")
+        
+        url = "https://uaadizhi.com/"
+        
+        async with aiohttp.ClientSession() as session:
+            try:
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36 Edg/137.0.0.0',
+                }
+                async with session.get(url, headers=headers, timeout=10) as response:
+                    if response.status == 200:
+                        text = await response.text()
+                        soup = BeautifulSoup(text, 'lxml')
+                        li_elements = soup.find_all('li')
+                        for li in li_elements:
+                            span = li.find('span')
+                            if span and '最新' in span.get_text():
+                                a_tag = li.find('a')
+                                if a_tag and a_tag.has_attr('href'):
+                                    link_url = a_tag['href']
+                                    yield event.plain_result(f"💕 成功找到有爱爱最新网址：\n{link_url}")
+                                    return
+            except Exception as e:
+                logger.error(f"访问 {url} 失败: {e}")
+            
+        yield event.plain_result("❌ 抱歉，有爱爱导航站目前无法访问。")
 
     async def terminate(self):
         """插件销毁时的清理工作"""
