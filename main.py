@@ -177,7 +177,7 @@ class SoushuBaLinkExtractorPlugin(Star):
                 for domain_url in self.target_domains:
                     link_url = await self._extract_link_from_url(session, domain_url)
                     if link_url:
-                        yield event.plain_result(f" 成功找到搜书吧最新网址：\n{link_url}")
+                        yield event.plain_result(f"📖 成功找到搜书吧最新网址：\n{link_url}")
                         return
             yield event.plain_result("❌ 抱歉，所有导航网站均无法访问或未找到可用链接。")
             return
