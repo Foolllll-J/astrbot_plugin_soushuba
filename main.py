@@ -184,7 +184,7 @@ class SoushuBaLinkExtractorPlugin(Star):
                 logger.info(f"[sxsy 搜索] 解析到 {len(items)} 条结果")
 
                 if not items:
-                    yield event.plain_result("❌ 无法解析搜索结果，请检查 Cookie 或网站结构是否变化。")
+                    yield event.plain_result("❌ 无法获取搜索结果，请检查 Cookie 是否过期。")
                     return
 
                 results = []
@@ -208,7 +208,7 @@ class SoushuBaLinkExtractorPlugin(Star):
 
             except Exception as e:
                 logger.error(f"sxsy 搜索出错: {e}")
-                yield event.plain_result(f"❌ 搜索过程中发生错误: {str(e)}")
+                yield event.plain_result(f"❌ 搜索过程中发生错误: {str(e)}，请稍后重试。")
 
     @filter.command("sis", alias={'第一会所'})
     async def sis_command(self, event: AstrMessageEvent):
