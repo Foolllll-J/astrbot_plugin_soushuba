@@ -1,7 +1,7 @@
 import asyncio
 import aiohttp
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from typing import List, Dict, Optional
 import os
 import re
@@ -12,12 +12,13 @@ from astrbot.api.message_components import Plain
 from astrbot.api import logger
 from astrbot.core.config import AstrBotConfig
 
+DEFAULT_SXSY_HOST = "sxsy19.com" # 默认域名
 
 @register(
     "astrbot_plugin_soushuba",
     "Foolllll",
     "搜书吧链接获取",
-    "1.0.0",
+    "1.1.0",
     "https://github.com/Foolllll-J/astrbot_plugin_soushuba",
 )
 class SoushuBaLinkExtractorPlugin(Star):
@@ -32,45 +33,29 @@ class SoushuBaLinkExtractorPlugin(Star):
         self.plugin_config = config
 
 
-    async def _extract_link_from_url(self, session: aiohttp.ClientSession, url: str, start_url: Optional[str] = None) -> str:
-        """尝试访问URL并提取指定链接，即使状态码是404也会尝试解析内容。
-        start_url 是最初的请求URL，用于最终消息报告。
-        """
-        # 如果是首次调用，将当前URL作为start_url
-        if start_url is None:
-            start_url = url
-
+    async def _extract_link_from_url(self, session: aiohttp.ClientSession, url: str) -> Optional[str]:
+        """尝试访问URL并提取指定链接。成功则返回链接，失败返回 None。"""
         try:
             ssl_verify = False if url.startswith("https://") else True
-            if not ssl_verify:
-                logger.debug(f"由于证书问题，访问 {url} 将禁用 SSL 验证。")
             
             async with session.get(url, timeout=20, ssl=ssl_verify) as response:
                 final_url = str(response.url)
                 html_content = await response.text()
-                status_code = response.status
             
-            logger.debug(f"成功访问 {url}。最终URL: {final_url}，状态码: {status_code}。HTML内容长度: {len(html_content)} 字节。")
-            logger.debug(f"HTML Content preview (first 500 chars from {final_url}): \n{html_content[:500]}...") 
-
             # 步骤1: 检查并处理 JavaScript 重定向
             js_redirect_match = re.search(r"window\.location\.href\s*=\s*['\"](.*?)['\"];", html_content)
             if js_redirect_match:
                 redirect_target_url = urljoin(final_url, js_redirect_match.group(1))
-                logger.debug(f"检测到 JavaScript 跳转到: {redirect_target_url}，再次请求。")
-                return await self._extract_link_from_url(session, redirect_target_url, start_url)
+                return await self._extract_link_from_url(session, redirect_target_url)
 
             # 步骤2: 检查并处理 Meta Refresh 重定向
             meta_refresh_match = re.search(r"<meta http-equiv=\"refresh\" content=\"[\d\.]*;\s*url=(.*?)\"", html_content, re.IGNORECASE)
             if meta_refresh_match:
                 redirect_target_url = urljoin(final_url, meta_refresh_match.group(1))
-                logger.debug(f"检测到 Meta Refresh 跳转到: {redirect_target_url}，再次请求。")
-                return await self._extract_link_from_url(session, redirect_target_url, start_url)
+                return await self._extract_link_from_url(session, redirect_target_url)
 
             # 步骤3: 执行 BeautifulSoup 查找
             soup = BeautifulSoup(html_content, 'lxml') 
-            link_element = None
-
             link_element = soup.select_one('a.link') 
             if not link_element:
                 link_element = soup.find('a', string='搜书吧')
@@ -81,45 +66,57 @@ class SoushuBaLinkExtractorPlugin(Star):
                 link_url = link_element['href']
                 if not link_url.startswith(('http://', 'https://')):
                     link_url = urljoin(final_url, link_url)
-                
-                logger.info(f"最终找到链接: {link_url}")
-                return f"✅ 成功找到链接于 {start_url}:\n{link_url}"
-            else:
-                logger.warning(f"所有查找策略均未能在 {final_url} 找到有效链接。")
-                return f"ℹ️ 访问 {start_url} 成功，但未找到任何有效的链接。"
+                return link_url
 
-        except aiohttp.ClientError as e: 
-            logger.error(f"❌ 访问 {url} 失败: 网络连接错误 - {e}")
-            return f"❌ 访问 {start_url} 失败: 网络连接错误 - {e}"
-        except asyncio.TimeoutError: 
-            logger.error(f"❌ 访问 {url} 超时。")
-            return f"❌ 访问 {start_url} 超时，请稍后再试。"
         except Exception as e: 
-            logger.error(f"❌ 访问 {url} 发生未知错误: {e}")
-            return f"❌ 访问 {start_url} 发生未知错误: {e}"
+            logger.error(f"访问 {url} 失败: {e}")
+        return None
 
     @filter.command("ssb", alias={'搜书吧'})
     async def ssb_command(self, event: AstrMessageEvent):
         """
-        依次尝试访问预设列表中的搜书吧导航站，并返回第一个成功访问到的页面中的第一个链接。
+        获取搜书吧的网址。
         用法: /ssb
         """
         logger.info(f"用户 {event.get_sender_name()} 触发 /ssb 命令，开始查找搜书吧网址。")
-        yield event.plain_result("🚀 正在尝试查找搜书吧网址，请稍候...")
         
         async with aiohttp.ClientSession() as session:
             for domain_url in self.target_domains:
-                logger.info(f"正在尝试访问: {domain_url}")
-                result_message = await self._extract_link_from_url(session, domain_url, domain_url) 
-                
-                if result_message.startswith("✅") or result_message.startswith("ℹ️"):
-                    yield event.plain_result(result_message)
+                link_url = await self._extract_link_from_url(session, domain_url)
+                if link_url:
+                    yield event.plain_result(f"📖 成功找到搜书吧最新网址：\n{link_url}")
                     return
-                else:
-                    logger.warning(f"访问 {domain_url} 失败，正在尝试下一个...")
             
         yield event.plain_result("❌ 抱歉，所有导航网站均无法访问或未找到可用链接。")
 
+    @filter.command("sxsy", alias={'尚香书苑'})
+    async def sxsy_command(self, event: AstrMessageEvent):
+        """
+        获取尚香书苑的网址。
+        用法: /sxsy
+        """
+        logger.info(f"用户 {event.get_sender_name()} 触发 /sxsy 命令，开始查找尚香书苑网址。")
+
+        async with aiohttp.ClientSession() as session:
+            try:
+                url = "https://sxsy.org/"
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36 Edg/137.0.0.0',
+                }
+                async with session.get(url, headers=headers, timeout=10, ssl=False) as response:
+                    if response.status == 200:
+                        text = await response.text()
+                        match = re.search(r'href="https://([^"]+)"', text)
+                        if match:
+                            host = match.group(1)
+                            yield event.plain_result(f"🌸 成功找到尚香书苑最新网址：\nhttps://{host}")
+                            return
+                    
+                    yield event.plain_result(f"🌸 尚香书苑最新网址：\nhttps://{DEFAULT_SXSY_HOST}")
+
+            except Exception as e:
+                logger.error(f"[获取sxsy host] 发生错误: {e}")
+                yield event.plain_result(f"🌸 尚香书苑目前网址：\nhttps://{DEFAULT_SXSY_HOST}")
 
     async def terminate(self):
         """插件销毁时的清理工作"""
