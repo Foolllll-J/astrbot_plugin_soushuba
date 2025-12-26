@@ -118,6 +118,38 @@ class SoushuBaLinkExtractorPlugin(Star):
                 logger.error(f"[获取sxsy host] 发生错误: {e}")
                 yield event.plain_result(f"🌸 尚香书苑目前网址：\nhttps://{DEFAULT_SXSY_HOST}")
 
+    @filter.command("sis", alias={'第一会所'})
+    async def sis_command(self, event: AstrMessageEvent):
+        """
+        获取第一会所的网址。
+        用法: /sis
+        """
+        logger.info(f"用户 {event.get_sender_name()} 触发 /sis 命令，开始查找第一会所网址。")
+        
+        target_navs = ["http://sis001dz.org/", "http://www.sis001home.com/"]
+        
+        async with aiohttp.ClientSession() as session:
+            for url in target_navs:
+                try:
+                    headers = {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36 Edg/137.0.0.0',
+                    }
+                    async with session.get(url, headers=headers, timeout=10) as response:
+                        if response.status == 200:
+                            text = await response.text()
+                            soup = BeautifulSoup(text, 'lxml')
+                            # 查找包含“地址一”文本的 <a> 标签
+                            link_element = soup.find('a', string=re.compile(r'地址一'))
+                            if link_element and link_element.has_attr('href'):
+                                link_url = link_element['href']
+                                yield event.plain_result(f"🔞 成功找到第一会所最新网址：\n{link_url}")
+                                return
+                except Exception as e:
+                    logger.error(f"访问 {url} 失败: {e}")
+                    continue
+            
+        yield event.plain_result("❌ 抱歉，第一会所导航站目前无法访问。")
+
     async def terminate(self):
         """插件销毁时的清理工作"""
         logger.info("搜书吧链接获取插件已卸载")
