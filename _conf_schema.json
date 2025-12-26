@@ -1,8 +1,19 @@
-{
+﻿{
     "sxsy_cookie": {
         "description": "尚香书苑Cookie",
         "type": "string",
         "hint": "用于搜索，可以从浏览器获取。",
         "default": ""
+    },
+    "search_result_count": {
+        "description": "搜索结果数量",
+        "hint": "设置每次搜索返回的结果数量",
+        "type": "int",
+        "slider": {
+            "min": 5,
+            "max": 20,
+            "step": 1
+        },
+        "default": 10
     }
 }
