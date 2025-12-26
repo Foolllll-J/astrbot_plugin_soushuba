@@ -8,7 +8,7 @@
     "sxsy_cookie": {
         "description": "尚香书苑Cookie",
         "type": "string",
-        "hint": "用于搜索，可以从浏览器获取。",
+        "hint": "用于搜索，可以从浏览器获取",
         "default": ""
     },
     "search_result_count": {

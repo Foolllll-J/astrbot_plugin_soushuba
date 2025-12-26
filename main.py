@@ -151,7 +151,7 @@ class SoushuBaLinkExtractorPlugin(Star):
             async with session.post(login_post_url, data=login_data, headers=self.headers, timeout=15, ssl=False) as resp:
                 await resp.read() # 确保读取
 
-            # 3. 校验登录状态 (参考 ssb.py)
+            # 3. 校验登录状态
             check_url = urljoin(base_url, "home.php?mod=spacecp")
             async with session.get(check_url, headers=self.headers, timeout=15, ssl=False) as resp:
                 final_url = str(resp.url)
@@ -245,7 +245,6 @@ class SoushuBaLinkExtractorPlugin(Star):
                 
                 logger.info(f"[SSB 搜索] 获取搜索页 formhash: {formhash}")
 
-                # 严格参考 Discuz! 搜索请求，srchtxt 需要 GBK 编码
                 search_params = {
                     'mod': 'forum',
                     'searchsubmit': 'yes',
@@ -281,7 +280,7 @@ class SoushuBaLinkExtractorPlugin(Star):
                     return
 
                 results = []
-                for item in items[:self.search_result_count]:
+                for i, item in enumerate(items[:self.search_result_count], 1):
                     title_el = item.select_one('h3.xs3 a')
                     if not title_el: continue
                     
@@ -293,7 +292,7 @@ class SoushuBaLinkExtractorPlugin(Star):
                     if time_span:
                         time_text = time_span.get_text(strip=True)
                     
-                    results.append(f"📌 {title}\n🔗 {link}\n📅 时间: {time_text}")
+                    results.append(f"【{i}】{title}\n📅 时间: {time_text}\n🔗 {link}")
 
                 reply = f"✅ 为您找到以下关于 “{keyword}” 的结果：\n\n" + "\n\n".join(results)
                 yield event.plain_result(reply)
@@ -391,7 +390,7 @@ class SoushuBaLinkExtractorPlugin(Star):
                     return
 
                 results = []
-                for item in items[:self.search_result_count]:
+                for i, item in enumerate(items[:self.search_result_count], 1):
                     title_el = item.select_one('h3.xs3 a')
                     if not title_el: continue
                     
@@ -404,7 +403,7 @@ class SoushuBaLinkExtractorPlugin(Star):
                     if time_span:
                         time_text = time_span.get_text(strip=True)
                     
-                    results.append(f"📌 {title}\n🔗 {link}\n📅 时间: {time_text}")
+                    results.append(f"【{i}】{title}\n📅 时间: {time_text}\n🔗 {link}")
 
                 reply = f"✅ 为您找到以下关于 “{keyword}” 的结果：\n\n" + "\n\n".join(results)
                 yield event.plain_result(reply)
