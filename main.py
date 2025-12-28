@@ -1,13 +1,15 @@
+﻿import json
 import asyncio
 import aiohttp
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlencode
 from typing import List, Dict, Optional
 import os
 import re
+import datetime
 
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star, register, StarTools
 from astrbot.api.message_components import Plain
 from astrbot.api import logger
 
@@ -15,7 +17,7 @@ from astrbot.api import logger
     "astrbot_plugin_soushuba",
     "Foolllll",
     "搜书吧助手",
-    "1.1.0",
+    "1.1.1",
     "https://github.com/Foolllll-J/astrbot_plugin_soushuba",
 )
 class SoushuBaLinkExtractorPlugin(Star):
@@ -32,6 +34,9 @@ class SoushuBaLinkExtractorPlugin(Star):
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         }
+        self.data_dir = StarTools.get_data_dir("astrbot_plugin_soushuba")
+        os.makedirs(self.data_dir, exist_ok=True)
+        self.ssb_cookie_file = os.path.join(self.data_dir, "ssb_cookies.json")
 
     async def _get_text(self, response: aiohttp.ClientResponse) -> str:
         """获取响应内容并处理编码问题"""
@@ -88,16 +93,213 @@ class SoushuBaLinkExtractorPlugin(Star):
             logger.error(f"访问 {url} 失败: {e}")
         return None
 
+    def _load_ssb_cookies(self, username: str) -> dict:
+        if os.path.exists(self.ssb_cookie_file):
+            try:
+                with open(self.ssb_cookie_file, "r", encoding="utf-8") as f:
+                    all_cookies = json.load(f)
+                    data = all_cookies.get(username, {})
+                    return data.get("cookies", {})
+            except Exception as e:
+                logger.error(f"加载 SSB Cookie 失败: {e}")
+        return {}
+
+    def _save_ssb_cookies(self, username: str, cookies: dict):
+        try:
+            all_cookies = {}
+            if os.path.exists(self.ssb_cookie_file):
+                with open(self.ssb_cookie_file, "r", encoding="utf-8") as f:
+                    try:
+                        all_cookies = json.load(f)
+                    except: pass
+            all_cookies[username] = {
+                "cookies": cookies,
+                "update_time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            with open(self.ssb_cookie_file, "w", encoding="utf-8") as f:
+                json.dump(all_cookies, f, ensure_ascii=False, indent=2)
+            logger.info(f"[SSB] 账号 {username} 的 Cookie 已保存")
+        except Exception as e:
+            logger.error(f"保存 SSB Cookie 失败: {e}")
+
+    async def _ssb_login(self, session, base_url: str, username, password):
+        """参考 ssb.py 的登录逻辑"""
+        try:
+            logger.info(f"[SSB 登录] 开始登录流程: {username} @ {base_url}")
+            # 1. 获取 formhash
+            login_url = urljoin(base_url, "member.php?mod=logging&action=login")
+            async with session.get(login_url, headers=self.headers, timeout=15, ssl=False) as resp:
+                html = await self._get_text(resp)
+                soup = BeautifulSoup(html, "lxml")
+                formhash_el = soup.find("input", {"name": "formhash"})
+                if not formhash_el: 
+                    logger.error("[SSB 登录] 无法在登录页面获取 formhash")
+                    return False
+                formhash = formhash_el["value"]
+                logger.info(f"[SSB 登录] 获取到 formhash: {formhash}")
+
+            # 2. 提交登录
+            login_post_url = urljoin(base_url, "member.php?mod=logging&action=login&loginsubmit=yes&infloat=yes&lssubmit=yes&inajax=1")
+            login_data = {
+                "formhash": formhash,
+                "username": username,
+                "password": password,
+                "quickforward": "yes",
+                "handlekey": "ls"
+            }
+            logger.info(f"[SSB 登录] 提交登录请求...")
+            async with session.post(login_post_url, data=login_data, headers=self.headers, timeout=15, ssl=False) as resp:
+                await resp.read() # 确保读取
+
+            # 3. 校验登录状态
+            check_url = urljoin(base_url, "home.php?mod=spacecp")
+            async with session.get(check_url, headers=self.headers, timeout=15, ssl=False) as resp:
+                final_url = str(resp.url)
+                html = await self._get_text(resp)
+                if "登录" not in final_url and username in html:
+                    logger.info(f"[SSB 登录] 登录验证成功: {username}")
+                    cookies = {c.key: c.value for c in session.cookie_jar}
+                    self._save_ssb_cookies(username, cookies)
+                    return True
+                else:
+                    logger.error(f"[SSB 登录] 登录验证失败。URL: {final_url}, 用户名是否存在: {username in html}")
+        except Exception as e:
+            logger.error(f"[SSB 登录] 异常: {e}")
+        return False
+
     @filter.command("ssb", alias={'搜书吧'})
     async def ssb_command(self, event: AstrMessageEvent):
-        """获取搜书吧的网址"""
+        """获取搜书吧的网址或搜索书籍"""
+        args = event.message_str.strip().split(maxsplit=1)
+        if len(args) < 2:
+            # 获取网址逻辑
+            async with aiohttp.ClientSession() as session:
+                for domain_url in self.target_domains:
+                    link_url = await self._extract_link_from_url(session, domain_url)
+                    if link_url:
+                        yield event.plain_result(f"📖 成功找到搜书吧最新网址：\n{link_url}")
+                        return
+            yield event.plain_result("❌ 抱歉，所有导航网站均无法访问或未找到可用链接。")
+            return
+
+        # 搜索逻辑
+        keyword = args[1]
+        ssb_auth = self.plugin_config.get("ssb_auth", "")
+        if not ssb_auth or "&" not in ssb_auth:
+            yield event.plain_result(" 请先在插件配置中设置 ssb_auth (格式: 账号&密码)。")
+            return
+        
+        username, password = ssb_auth.split("&", 1)
+        yield event.plain_result(f"🔍 正在搜书吧搜索: {keyword}...")
+
         async with aiohttp.ClientSession() as session:
-            for domain_url in self.target_domains:
-                link_url = await self._extract_link_from_url(session, domain_url)
-                if link_url:
-                    yield event.plain_result(f"📖 成功找到搜书吧最新网址：\n{link_url}")
+            try:
+                # 1. 获取最新 base_url
+                base_url = None
+                for domain_url in self.target_domains:
+                    base_url = await self._extract_link_from_url(session, domain_url)
+                    if base_url: break
+                
+                if not base_url:
+                    yield event.plain_result(" 无法获取搜书吧最新网址，请稍后再试。")
                     return
-        yield event.plain_result("❌ 抱歉，所有导航网站均无法访问或未找到可用链接。")
+                
+                parsed = urlparse(base_url)
+                base_url = f"{parsed.scheme}://{parsed.netloc}/"
+                logger.info(f"[SSB 搜索] 使用 Base URL: {base_url}")
+
+                # 2. 加载 Cookie 并校验
+                cookies = self._load_ssb_cookies(username)
+                if cookies:
+                    session.cookie_jar.update_cookies(cookies)
+                    logger.info(f"[SSB 搜索] 已加载账号 {username} 的历史 Cookie")
+                
+                # 校验登录状态
+                check_url = urljoin(base_url, "home.php?mod=spacecp")
+                is_logged_in = False
+                try:
+                    async with session.get(check_url, headers=self.headers, timeout=10, ssl=False) as resp:
+                        final_url = str(resp.url)
+                        html = await self._get_text(resp)
+                        if "登录" not in final_url and username in html:
+                            is_logged_in = True
+                            logger.info(f"[SSB 搜索] Cookie 验证有效: {username}")
+                except Exception as e: 
+                    logger.warning(f"[SSB 搜索] Cookie 验证异常: {e}")
+
+                if not is_logged_in:
+                    logger.info(f"[SSB 搜索] Cookie 失效或未登录，尝试登录: {username}")
+                    if not await self._ssb_login(session, base_url, username, password):
+                        yield event.plain_result(" 搜书吧登录失败，请检查账密配置。")
+                        return
+
+                # 3. 搜索
+                search_url = urljoin(base_url, "search.php?mod=forum")
+                
+                # 获取 formhash
+                formhash = ""
+                async with session.get(search_url, headers=self.headers, timeout=10, ssl=False) as resp:
+                    html = await self._get_text(resp)
+                    fh_match = re.search(r'name="formhash" value="([a-f0-9]+)"', html)
+                    if fh_match: formhash = fh_match.group(1)
+                
+                logger.info(f"[SSB 搜索] 获取搜索页 formhash: {formhash}")
+
+                search_params = {
+                    'mod': 'forum',
+                    'searchsubmit': 'yes',
+                    'srchtxt': keyword,
+                    'formhash': formhash
+                }
+                encoded_data = urlencode(search_params, encoding='gbk')
+                
+                search_headers = self.headers.copy()
+                search_headers['Referer'] = search_url
+                search_headers['Content-Type'] = 'application/x-www-form-urlencoded'
+                
+                logger.info(f"[SSB 搜索] 发送搜索 POST 请求, 关键词: {keyword}")
+                async with session.post(search_url, data=encoded_data, headers=search_headers, timeout=15, ssl=False) as p_resp:
+                    html = await self._get_text(p_resp)
+                    final_search_url = str(p_resp.url)
+                    logger.info(f"[SSB 搜索] 搜索响应 URL: {final_search_url}, 长度: {len(html)}")
+
+                if "未找到符合条件的搜索结果" in html:
+                    yield event.plain_result(f" 未找到与 {keyword} 相关的结果。")
+                    return
+
+                # 4. 解析结果
+                soup = BeautifulSoup(html, 'lxml')
+                items = soup.select('div#threadlist ul li.pbw')
+                logger.info(f"[SSB 搜索] 解析到 {len(items)} 条结果")
+
+                if not items:
+                    if "验证码" in html or "secqaa" in html:
+                        yield event.plain_result(" 搜索触发了验证码，请稍后再试。")
+                    else:
+                        yield event.plain_result(" 无法获取搜索结果，可能是被拦截或解析失败。")
+                    return
+
+                results = []
+                for i, item in enumerate(items[:self.search_result_count], 1):
+                    title_el = item.select_one('h3.xs3 a')
+                    if not title_el: continue
+                    
+                    title = "".join(title_el.find_all(string=True, recursive=True)).strip()
+                    link = urljoin(base_url, title_el['href'])
+                    
+                    time_text = "未知"
+                    time_span = item.select_one('p span')
+                    if time_span:
+                        time_text = time_span.get_text(strip=True)
+                    
+                    results.append(f"【{i}】{title}\n📅 时间: {time_text}\n🔗 {link}")
+
+                reply = f"✅ 为您找到以下关于 “{keyword}” 的结果：\n\n" + "\n\n".join(results)
+                yield event.plain_result(reply)
+
+            except Exception as e:
+                logger.error(f"[SSB 搜索] 出错: {e}")
+                yield event.plain_result(f" 搜索过程中发生错误: {str(e)}")
 
     @filter.command("sxsy", alias={'尚香书苑'})
     async def sxsy_command(self, event: AstrMessageEvent):
@@ -188,7 +390,7 @@ class SoushuBaLinkExtractorPlugin(Star):
                     return
 
                 results = []
-                for item in items[:self.search_result_count]:
+                for i, item in enumerate(items[:self.search_result_count], 1):
                     title_el = item.select_one('h3.xs3 a')
                     if not title_el: continue
                     
@@ -201,7 +403,7 @@ class SoushuBaLinkExtractorPlugin(Star):
                     if time_span:
                         time_text = time_span.get_text(strip=True)
                     
-                    results.append(f"📌 {title}\n🔗 {link}\n📅 时间: {time_text}")
+                    results.append(f"【{i}】{title}\n📅 时间: {time_text}\n🔗 {link}")
 
                 reply = f"✅ 为您找到以下关于 “{keyword}” 的结果：\n\n" + "\n\n".join(results)
                 yield event.plain_result(reply)
