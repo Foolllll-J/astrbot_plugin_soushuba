@@ -373,11 +373,14 @@ class SoushuBaLinkExtractorPlugin(Star):
                     logger.info(f"[sxsy 搜索] POST 响应 URL: {p_resp.url}, 长度: {len(html)}")
 
                 # 4. 检查异常状态
-                if "请先登录" in html or "访问限制" in html:
-                    yield event.plain_result("❌ Cookie 可能已失效，请重新配置。")
+                # CK 失效特征：页面标题包含“登录”，或者 body 带有 pg_logging 类，或者包含特定的登录 action 链接
+                if '<title>登录 -  尚香书苑  </title>' in html or 'class="pg_logging"' in html or 'member.php?mod=logging&action=login' in html:
+                    yield event.plain_result("❌ Cookie 已失效或未登录，请更新CK。")
                     return
-                if "未找到符合条件的搜索结果" in html:
-                    yield event.plain_result(f"📦 未找到与 “{keyword}” 相关的搜索结果。")
+                
+                # 搜索无结果特征：包含“对不起，没有找到匹配结果。”或者结果数为 0
+                if "对不起，没有找到匹配结果。" in html or "相关内容 0 个" in html:
+                    yield event.plain_result(f"📦 尚香书苑未找到与 “{keyword}” 相关的搜索结果。")
                     return
 
                 # 5. 解析结果
