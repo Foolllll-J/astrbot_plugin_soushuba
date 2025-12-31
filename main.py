@@ -8,6 +8,7 @@ import os
 import re
 import datetime
 
+import time
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register, StarTools
 from astrbot.api.message_components import Plain
@@ -37,6 +38,7 @@ class SoushuBaLinkExtractorPlugin(Star):
         self.data_dir = StarTools.get_data_dir("astrbot_plugin_soushuba")
         os.makedirs(self.data_dir, exist_ok=True)
         self.ssb_cookie_file = os.path.join(self.data_dir, "ssb_cookies.json")
+        self.last_ssb_search_time = 0
 
     async def _get_text(self, response: aiohttp.ClientResponse) -> str:
         """获取响应内容并处理编码问题"""
@@ -184,11 +186,19 @@ class SoushuBaLinkExtractorPlugin(Star):
 
         # 搜索逻辑
         keyword = args[1]
+        
+        # 40秒搜索限制
+        current_time = time.time()
+        if current_time - self.last_ssb_search_time < 40:
+            yield event.plain_result("搜书吧在 40 秒内只能进行一次搜索")
+            return
+        
         ssb_auth = self.plugin_config.get("ssb_auth", "")
         if not ssb_auth or "&" not in ssb_auth:
             yield event.plain_result(" 请先在插件配置中设置 ssb_auth (格式: 账号&密码)。")
             return
         
+        self.last_ssb_search_time = current_time # 更新上次搜索时间
         username, password = ssb_auth.split("&", 1)
         yield event.plain_result(f"🔍 正在搜书吧搜索: {keyword}...")
 
@@ -263,7 +273,7 @@ class SoushuBaLinkExtractorPlugin(Star):
                     final_search_url = str(p_resp.url)
                     logger.info(f"[SSB 搜索] 搜索响应 URL: {final_search_url}, 长度: {len(html)}")
 
-                if "未找到符合条件的搜索结果" in html:
+                if "对不起，没有找到匹配结果。" in html:
                     yield event.plain_result(f" 未找到与 {keyword} 相关的结果。")
                     return
 
