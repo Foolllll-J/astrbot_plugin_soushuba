@@ -249,6 +249,10 @@ class SoushuBaLinkExtractorPlugin(Star):
                 # 获取 formhash
                 formhash = ""
                 async with session.get(search_url, headers=self.headers, timeout=10, ssl=False) as resp:
+                    if resp.status != 200:
+                        logger.error(f"[SSB 搜索] 访问搜索页失败: {search_url}, Status: {resp.status}")
+                        yield event.plain_result(f"❌ 搜书吧访问异常，请稍后重试")
+                        return
                     html = await self._get_text(resp)
                     fh_match = re.search(r'name="formhash" value="([a-f0-9]+)"', html)
                     if fh_match: formhash = fh_match.group(1)
@@ -269,6 +273,10 @@ class SoushuBaLinkExtractorPlugin(Star):
                 
                 logger.info(f"[SSB 搜索] 发送搜索 POST 请求, 关键词: {keyword}")
                 async with session.post(search_url, data=encoded_data, headers=search_headers, timeout=15, ssl=False) as p_resp:
+                    if p_resp.status != 200:
+                        logger.error(f"[SSB 搜索] POST 搜索请求失败: {search_url}, Status: {p_resp.status}")
+                        yield event.plain_result(f"❌ 搜书吧搜索请求失败，请稍后重试")
+                        return
                     html = await self._get_text(p_resp)
                     final_search_url = str(p_resp.url)
                     logger.info(f"[SSB 搜索] 搜索响应 URL: {final_search_url}, 长度: {len(html)}")
@@ -364,10 +372,17 @@ class SoushuBaLinkExtractorPlugin(Star):
                 formhash = ""
                 try:
                     async with session.get(post_url, headers=headers, timeout=10, ssl=False) as f_resp:
+                        if f_resp.status != 200:
+                            logger.error(f"[sxsy] 访问搜索页失败: {post_url}, Status: {f_resp.status}")
+                            yield event.plain_result(f"❌ 尚香书苑访问异常，请稍后重试")
+                            return
                         f_html = await self._get_text(f_resp)
                         fh_match = re.search(r'name="formhash" value="([a-f0-9]+)"', f_html)
                         if fh_match: formhash = fh_match.group(1)
-                except: pass
+                except Exception as e:
+                    logger.error(f"[sxsy] 获取 formhash 异常: {e}")
+                    yield event.plain_result(f"❌ 尚香书苑访问超时或网络错误")
+                    return
 
                 post_data = {
                     'mod': 'forum',
@@ -379,6 +394,10 @@ class SoushuBaLinkExtractorPlugin(Star):
                 # 3. 发送 POST 搜索
                 logger.info(f"[sxsy 搜索] 尝试 POST 搜索: {post_url}")
                 async with session.post(post_url, data=post_data, headers=headers, timeout=15, ssl=False) as p_resp:
+                    if p_resp.status != 200:
+                        logger.error(f"[sxsy 搜索] POST 搜索请求失败: {post_url}, Status: {p_resp.status}")
+                        yield event.plain_result(f"❌ 尚香书苑搜索请求失败，请稍后重试")
+                        return
                     html = await self._get_text(p_resp)
                     logger.info(f"[sxsy 搜索] POST 响应 URL: {p_resp.url}, 长度: {len(html)}")
 

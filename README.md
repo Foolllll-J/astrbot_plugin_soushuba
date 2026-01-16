@@ -1,10 +1,20 @@
-﻿# 📚 搜书吧助手
+<div align="center">
+
+# 📚 搜书吧助手
+
+<i>🧭 搜书吧导航，助你永不失联</i>
 
 ![License](https://img.shields.io/badge/license-AGPL--3.0-green?style=flat-square)
 ![Python](https://img.shields.io/badge/python-3.10+-blue?style=flat-square&logo=python&logoColor=white)
 ![AstrBot](https://img.shields.io/badge/framework-AstrBot-ff6b6b?style=flat-square)
 
-本插件是为 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 项目开发的，旨在帮助用户快速获取搜书吧等网站的最新可用链接，并支持搜索。
+</div>
+
+## ✨ 简介
+
+一款为 [**AstrBot**](https://github.com/AstrBotDevs/AstrBot) 设计的搜书吧适配插件，旨在帮助用户快速获取搜书吧等网站的最新可用链接，并支持搜索。
+
+---
 
 ## ✨ 特性
 
@@ -12,6 +22,8 @@
 * **智能导航**：自动遍历备用域名，找到可访问的最新网址。
 * **搜索功能**：支持搜书吧和尚香书苑搜索。
 * **灵活配置**：支持自定义搜索结果数量和站点凭据。
+
+---
 
 ## 📖 使用方法
 
@@ -29,11 +41,15 @@
 * **`/sxsy [关键词]`**：在尚香书苑内搜索书籍。
   * *注意：需在配置中填写 `sxsy_cookie`。*
 
+---
+
 ### 3. 其他站点
 
 * **`/sis`** 或 **`/第一会所`**：获取第一会所最新网址。
 * **`/01bz`** 或 **`/第一版主`**：获取第一版主最新网址。
 * **`/uaa`** 或 **`/有爱爱`**：获取有爱爱最新网址。
+
+---
 
 ## ⚙️ 配置说明
 
@@ -45,6 +61,8 @@
 | `ssb_auth`            | 搜书吧账号和密码，用于登录搜索 | `账号&密码`        |
 | `sxsy_cookie`         | 尚香书苑的浏览器 Cookie        | `__cf_bm=xxx; ...` |
 | `search_result_count` | 搜索结果返回的数量 (5-20)      | `10` (默认)        |
+
+---
 
 ## 📝 版本历史
 
@@ -59,9 +77,17 @@
 * 初始版本。
 * 支持获取搜书吧 (`/ssb`) 的最新网址。
 
+---
+
 ## ❤️ 支持
 
 * [AstrBot 帮助文档](https://astrbot.app)
-* 如果您在使用中遇到问题，欢迎在 [GitHub Repo](https://github.com/Foolllll-J/astrbot_plugin_soushuba) 提交 [Issue](https://github.com/Foolllll-J/astrbot_plugin_soushuba/issues)。
+* 如果您在使用中遇到问题，欢迎在本仓库提交 [Issue](https://github.com/Foolllll-J/astrbot_plugin_soushuba/issues)。
 
 ---
+
+<div align="center">
+
+**如果本插件对你有帮助，欢迎点个 ⭐ Star 支持一下！**
+
+</div>
