@@ -397,14 +397,14 @@ class SoushuBaLinkExtractorPlugin(Star):
             }
             with open(self.ssb_cookie_file, "w", encoding="utf-8") as f:
                 json.dump(all_cookies, f, ensure_ascii=False, indent=2)
-            logger.info(f"[SSB] 账号 {username} 的 Cookie 已保存")
+            logger.debug(f"[SSB] 账号 {username} 的 Cookie 已保存")
         except Exception as e:
             logger.error(f"保存 SSB Cookie 失败: {e}")
 
     async def _ssb_login(self, session, base_url: str, username, password):
         """参考 ssb.py 的登录逻辑"""
         try:
-            logger.info(f"[SSB 登录] 开始登录流程: {username} @ {base_url}")
+            logger.debug(f"[SSB 登录] 开始登录流程: {username} @ {base_url}")
             # 1. 获取 formhash
             login_url = urljoin(base_url, "member.php?mod=logging&action=login")
             async with session.get(login_url, headers=self.headers, timeout=15, ssl=False) as resp:
@@ -415,7 +415,7 @@ class SoushuBaLinkExtractorPlugin(Star):
                     logger.error("[SSB 登录] 无法在登录页面获取 formhash")
                     return False
                 formhash = formhash_el["value"]
-                logger.info(f"[SSB 登录] 获取到 formhash: {formhash}")
+                logger.debug(f"[SSB 登录] 获取到 formhash: {formhash}")
 
             # 2. 提交登录
             login_post_url = urljoin(base_url, "member.php?mod=logging&action=login&loginsubmit=yes&infloat=yes&lssubmit=yes&inajax=1")
@@ -426,7 +426,7 @@ class SoushuBaLinkExtractorPlugin(Star):
                 "quickforward": "yes",
                 "handlekey": "ls"
             }
-            logger.info(f"[SSB 登录] 提交登录请求...")
+            logger.debug(f"[SSB 登录] 提交登录请求...")
             async with session.post(login_post_url, data=login_data, headers=self.headers, timeout=15, ssl=False) as resp:
                 await resp.read() # 确保读取
 
@@ -436,7 +436,7 @@ class SoushuBaLinkExtractorPlugin(Star):
                 final_url = str(resp.url)
                 html = await self._get_text(resp)
                 if "登录" not in final_url and username in html:
-                    logger.info(f"[SSB 登录] 登录验证成功: {username}")
+                    logger.debug(f"[SSB 登录] 登录验证成功: {username}")
                     cookies = {c.key: c.value for c in session.cookie_jar}
                     self._save_ssb_cookies(username, cookies)
                     return True
@@ -493,13 +493,13 @@ class SoushuBaLinkExtractorPlugin(Star):
                 
                 parsed = urlparse(base_url)
                 base_url = f"{parsed.scheme}://{parsed.netloc}/"
-                logger.info(f"[SSB 搜索] 使用 Base URL: {base_url}")
+                logger.debug(f"[SSB 搜索] 使用 Base URL: {base_url}")
 
                 # 2. 加载 Cookie 并校验
                 cookies = self._load_ssb_cookies(username)
                 if cookies:
                     session.cookie_jar.update_cookies(cookies)
-                    logger.info(f"[SSB 搜索] 已加载账号 {username} 的历史 Cookie")
+                    logger.debug(f"[SSB 搜索] 已加载账号 {username} 的历史 Cookie")
                 
                 # 校验登录状态
                 check_url = urljoin(base_url, "home.php?mod=spacecp")
@@ -510,12 +510,12 @@ class SoushuBaLinkExtractorPlugin(Star):
                         html = await self._get_text(resp)
                         if "登录" not in final_url and username in html:
                             is_logged_in = True
-                            logger.info(f"[SSB 搜索] Cookie 验证有效: {username}")
+                            logger.debug(f"[SSB 搜索] Cookie 验证有效: {username}")
                 except Exception as e: 
                     logger.warning(f"[SSB 搜索] Cookie 验证异常: {e}")
 
                 if not is_logged_in:
-                    logger.info(f"[SSB 搜索] Cookie 失效或未登录，尝试登录: {username}")
+                    logger.debug(f"[SSB 搜索] Cookie 失效或未登录，尝试登录: {username}")
                     if not await self._ssb_login(session, base_url, username, password):
                         yield event.plain_result(" 搜书吧登录失败，请检查账密配置。")
                         return
@@ -534,7 +534,7 @@ class SoushuBaLinkExtractorPlugin(Star):
                     fh_match = re.search(r'name="formhash" value="([a-f0-9]+)"', html)
                     if fh_match: formhash = fh_match.group(1)
                 
-                logger.info(f"[SSB 搜索] 获取搜索页 formhash: {formhash}")
+                logger.debug(f"[SSB 搜索] 获取搜索页 formhash: {formhash}")
 
                 search_params = {
                     'mod': 'forum',
@@ -548,7 +548,7 @@ class SoushuBaLinkExtractorPlugin(Star):
                 search_headers['Referer'] = search_url
                 search_headers['Content-Type'] = 'application/x-www-form-urlencoded'
                 
-                logger.info(f"[SSB 搜索] 发送搜索 POST 请求, 关键词: {keyword}")
+                logger.debug(f"[SSB 搜索] 发送搜索 POST 请求, 关键词: {keyword}")
                 async with session.post(search_url, data=encoded_data, headers=search_headers, timeout=15, ssl=False) as p_resp:
                     if p_resp.status != 200:
                         logger.error(f"[SSB 搜索] POST 搜索请求失败: {search_url}, Status: {p_resp.status}")
@@ -556,7 +556,7 @@ class SoushuBaLinkExtractorPlugin(Star):
                         return
                     html = await self._get_text(p_resp)
                     final_search_url = str(p_resp.url)
-                    logger.info(f"[SSB 搜索] 搜索响应 URL: {final_search_url}, 长度: {len(html)}")
+                    logger.debug(f"[SSB 搜索] 搜索响应 URL: {final_search_url}, 长度: {len(html)}")
 
                 if "对不起，没有找到匹配结果。" in html:
                     yield event.plain_result(f" 未找到与 {keyword} 相关的结果。")
@@ -669,14 +669,14 @@ class SoushuBaLinkExtractorPlugin(Star):
                 }
 
                 # 3. 发送 POST 搜索
-                logger.info(f"[sxsy 搜索] 尝试 POST 搜索: {post_url}")
+                logger.debug(f"[sxsy 搜索] 尝试 POST 搜索: {post_url}")
                 async with session.post(post_url, data=post_data, headers=headers, timeout=15, ssl=False) as p_resp:
                     if p_resp.status != 200:
                         logger.error(f"[sxsy 搜索] POST 搜索请求失败: {post_url}, Status: {p_resp.status}")
                         yield event.plain_result(f"❌ 尚香书苑搜索请求失败，请稍后重试")
                         return
                     html = await self._get_text(p_resp)
-                    logger.info(f"[sxsy 搜索] POST 响应 URL: {p_resp.url}, 长度: {len(html)}")
+                    logger.debug(f"[sxsy 搜索] POST 响应 URL: {p_resp.url}, 长度: {len(html)}")
 
                 # 4. 检查异常状态
                 # CK 失效特征：页面标题包含“登录”，或者 body 带有 pg_logging 类，或者包含特定的登录 action 链接
