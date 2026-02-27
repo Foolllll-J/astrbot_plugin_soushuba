@@ -3,7 +3,7 @@ import asyncio
 import aiohttp
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse, urlencode
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Callable, Awaitable
 import os
 import re
 import datetime
@@ -11,17 +11,18 @@ import datetime
 import time
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register, StarTools
-from astrbot.api.message_components import Plain
 from astrbot.api import logger
 
 @register(
     "astrbot_plugin_soushuba",
     "Foolllll",
     "搜书吧助手",
-    "1.1.1",
+    "1.2",
     "https://github.com/Foolllll-J/astrbot_plugin_soushuba",
 )
 class SoushuBaLinkExtractorPlugin(Star):
+    MONITOR_SUBSCRIBERS_KEY = "status_monitor_subscribers"
+
     def __init__(self, context: Context, config=None):
         super().__init__(context)
         self.target_domains: List[str] = [
@@ -30,15 +31,291 @@ class SoushuBaLinkExtractorPlugin(Star):
             "https://soushu2030.com",
             "https://soushu2035.com",
         ]
-        self.plugin_config = config
-        self.search_result_count = config.get("search_result_count", 10)
+        self.plugin_config = config or {}
+        self.search_result_count = self.plugin_config.get("search_result_count", 10)
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         }
+        raw_interval = self.plugin_config.get("monitor_check_interval", 3600)
+        try:
+            self.monitor_check_interval = max(int(raw_interval), 10)
+        except (TypeError, ValueError):
+            self.monitor_check_interval = 3600
+
         self.data_dir = StarTools.get_data_dir("astrbot_plugin_soushuba")
         os.makedirs(self.data_dir, exist_ok=True)
         self.ssb_cookie_file = os.path.join(self.data_dir, "ssb_cookies.json")
         self.last_ssb_search_time = 0
+        self._monitor_stop_event = asyncio.Event()
+        self._monitor_task: Optional[asyncio.Task] = None
+        self._monitor_subscribers: Dict[str, List[str]] = {"ssb": [], "sxsy": []}
+        self._monitor_states: Dict[str, Dict[str, object]] = {
+            "ssb": {"failed": False, "real_url": None},
+            "sxsy": {"failed": False, "real_url": None},
+        }
+
+    async def initialize(self):
+        await self._load_monitor_subscribers()
+        self._monitor_stop_event.clear()
+        self._monitor_task = asyncio.create_task(self._monitor_loop())
+        logger.info(
+            f"[状态监控] 后台任务已启动，检测间隔: {self.monitor_check_interval}s, "
+            f"搜书吧订阅: {len(self._monitor_subscribers['ssb'])}, "
+            f"尚香书苑订阅: {len(self._monitor_subscribers['sxsy'])}"
+        )
+
+    async def _load_monitor_subscribers(self):
+        data = await self.get_kv_data(self.MONITOR_SUBSCRIBERS_KEY, {})
+        if not isinstance(data, dict):
+            return
+        for site_key in ("ssb", "sxsy"):
+            sessions = data.get(site_key, [])
+            if isinstance(sessions, list):
+                normalized = [str(s).strip() for s in sessions if str(s).strip()]
+                # 去重并保留顺序
+                self._monitor_subscribers[site_key] = list(dict.fromkeys(normalized))
+
+    async def _save_monitor_subscribers(self):
+        await self.put_kv_data(self.MONITOR_SUBSCRIBERS_KEY, self._monitor_subscribers)
+
+    async def _set_site_monitor_subscription(self, site_key: str, session: str, enable: bool) -> bool:
+        subscribers = self._monitor_subscribers.setdefault(site_key, [])
+        if enable:
+            if session in subscribers:
+                return False
+            subscribers.append(session)
+        else:
+            if session not in subscribers:
+                return False
+            subscribers.remove(session)
+        await self._save_monitor_subscribers()
+        return True
+
+    def _normalize_base_url(self, url: str) -> str:
+        parsed = urlparse(url)
+        if parsed.scheme and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}/"
+        return url
+
+    async def _resolve_ssb_monitor_url(self, session: aiohttp.ClientSession) -> Optional[str]:
+        for domain_url in self.target_domains:
+            link_url = await self._extract_link_from_url(session, domain_url)
+            if link_url:
+                return self._normalize_base_url(link_url)
+        return None
+
+    async def _resolve_sxsy_monitor_url(self, session: aiohttp.ClientSession) -> Optional[str]:
+        host = "sxsy87.com"
+        try:
+            async with session.get("https://sxsy.org/", headers=self.headers, timeout=10, ssl=False) as response:
+                if response.status == 200:
+                    text = await self._get_text(response)
+                    match = re.search(r'href="https://([^"]+)"', text)
+                    if match:
+                        host = match.group(1).strip()
+        except Exception as e:
+            logger.warning(f"[状态监控] 获取尚香书苑真实地址失败: {e}")
+        if not host:
+            return None
+        return self._normalize_base_url(f"https://{host}/")
+
+    def _check_ssb_page_health(self, html: str) -> Optional[str]:
+        content = html.lower()
+        ssb_error_signs = [
+            "database error",
+            "discuz! database error",
+            "mysql error",
+            "sql syntax",
+            "table './",
+            "db_driver_mysqli",
+        ]
+        for sign in ssb_error_signs:
+            if sign in content:
+                return "检测到数据库错误页面"
+        return None
+
+    def _check_sxsy_page_health(self, html: str) -> Optional[str]:
+        content = html.lower()
+        ngx_default_signs = [
+            "welcome to nginx",
+            "test page for the nginx",
+            "if you see this page, the nginx web server is successfully installed",
+        ]
+        for sign in ngx_default_signs:
+            if sign in content:
+                return "检测到 nginx 默认页面"
+
+        sxsy_healthy_signs = [
+            "尚香书苑",
+            "powered by discuz",
+            "forum.php",
+            "search.php",
+            "member.php",
+            "discuz!",
+        ]
+        has_healthy_sign = any(sign in content for sign in sxsy_healthy_signs)
+        if "nginx" in content and not has_healthy_sign:
+            return "检测到代理异常页面"
+        if not has_healthy_sign and len(content.strip()) < 1200:
+            return "页面内容异常"
+        return None
+
+    async def _probe_site_access(
+        self,
+        session: aiohttp.ClientSession,
+        url: str,
+        site_key: str,
+    ) -> tuple[bool, str, str]:
+        try:
+            async with session.get(
+                url,
+                headers=self.headers,
+                timeout=15,
+                ssl=False,
+                allow_redirects=True,
+            ) as response:
+                final_url = str(response.url) if response.url else url
+                if 200 <= response.status < 400:
+                    html_content = await self._get_text(response)
+                    content_error = None
+                    if site_key == "ssb":
+                        content_error = self._check_ssb_page_health(html_content)
+                    elif site_key == "sxsy":
+                        content_error = self._check_sxsy_page_health(html_content)
+                    if content_error:
+                        return False, content_error, self._normalize_base_url(final_url)
+                    return True, f"HTTP {response.status}", self._normalize_base_url(final_url)
+                return False, f"HTTP {response.status}", self._normalize_base_url(final_url)
+        except asyncio.TimeoutError:
+            return False, "请求超时", self._normalize_base_url(url)
+        except Exception as e:
+            return False, str(e), self._normalize_base_url(url)
+
+    async def _check_site_status(
+        self,
+        site_key: str,
+        session: aiohttp.ClientSession,
+        resolver: Callable[[aiohttp.ClientSession], Awaitable[Optional[str]]],
+    ) -> tuple[bool, str, Optional[str]]:
+        state = self._monitor_states[site_key]
+        current_url = state.get("real_url")
+        last_error = ""
+
+        if isinstance(current_url, str) and current_url:
+            ok, detail, final_url = await self._probe_site_access(session, current_url, site_key)
+            if ok:
+                state["real_url"] = final_url
+                return True, detail, final_url
+            last_error = f"{final_url} -> {detail}"
+
+        resolved_url = await resolver(session)
+        if not resolved_url:
+            if not current_url:
+                return False, "无法获取真实站点地址", None
+            return False, last_error or "访问失败", str(current_url)
+
+        if resolved_url != current_url:
+            ok, detail, final_url = await self._probe_site_access(session, resolved_url, site_key)
+            if ok:
+                state["real_url"] = final_url
+                return True, detail, final_url
+            last_error = f"{final_url} -> {detail}"
+
+        return False, last_error or "访问失败", self._normalize_base_url(str(resolved_url))
+
+    async def _send_monitor_notification(self, site_key: str, text: str):
+        subscribers = list(self._monitor_subscribers.get(site_key, []))
+        if not subscribers:
+            return
+        for session in subscribers:
+            try:
+                sent = await self.context.send_message(session, MessageEventResult().message(text))
+                if not sent:
+                    logger.warning(f"[状态监控] 发送失败，未找到会话平台: {session}")
+            except Exception as e:
+                logger.error(f"[状态监控] 向会话 {session} 发送通知失败: {e}")
+
+    async def _handle_site_transition(
+        self,
+        site_key: str,
+        site_name: str,
+        is_ok: bool,
+        detail: str,
+        real_url: Optional[str],
+    ):
+        state = self._monitor_states[site_key]
+        if real_url:
+            state["real_url"] = real_url
+        was_failed = bool(state.get("failed", False))
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        site_url = str(state.get("real_url") or real_url or "未知")
+        brief_detail = str(detail or "").strip()
+        if "->" in brief_detail:
+            brief_detail = brief_detail.split("->", 1)[1].strip()
+        if not brief_detail:
+            brief_detail = "访问异常"
+
+        if is_ok:
+            if was_failed:
+                state["failed"] = False
+                text = (
+                    f"✅【网站状态恢复】{site_name}\n"
+                    f"时间: {now_str}\n"
+                    f"站点: {site_url}\n"
+                    "状态: 已恢复正常"
+                )
+                await self._send_monitor_notification(site_key, text)
+            return
+
+        if not was_failed:
+            state["failed"] = True
+            text = (
+                f"❌【网站状态异常】{site_name}\n"
+                f"时间: {now_str}\n"
+                f"站点: {site_url}\n"
+                f"原因: {brief_detail}"
+            )
+            await self._send_monitor_notification(site_key, text)
+
+    async def _monitor_once(self):
+        has_ssb_subscribers = bool(self._monitor_subscribers.get("ssb"))
+        has_sxsy_subscribers = bool(self._monitor_subscribers.get("sxsy"))
+        if not has_ssb_subscribers and not has_sxsy_subscribers:
+            return
+
+        async with aiohttp.ClientSession() as session:
+            if has_ssb_subscribers:
+                ok, detail, real_url = await self._check_site_status(
+                    "ssb",
+                    session,
+                    self._resolve_ssb_monitor_url,
+                )
+                await self._handle_site_transition("ssb", "搜书吧", ok, detail, real_url)
+
+            if has_sxsy_subscribers:
+                ok, detail, real_url = await self._check_site_status(
+                    "sxsy",
+                    session,
+                    self._resolve_sxsy_monitor_url,
+                )
+                await self._handle_site_transition("sxsy", "尚香书苑", ok, detail, real_url)
+
+    async def _monitor_loop(self):
+        while not self._monitor_stop_event.is_set():
+            try:
+                await self._monitor_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error(f"[状态监控] 轮询异常: {e}")
+
+            try:
+                await asyncio.wait_for(
+                    self._monitor_stop_event.wait(),
+                    timeout=self.monitor_check_interval,
+                )
+            except asyncio.TimeoutError:
+                continue
 
     async def _get_text(self, response: aiohttp.ClientResponse) -> str:
         """获取响应内容并处理编码问题"""
@@ -444,6 +721,53 @@ class SoushuBaLinkExtractorPlugin(Star):
                 logger.error(f"sxsy 搜索出错: {e}")
                 yield event.plain_result(f"❌ 搜索过程中发生错误: {str(e)}，请稍后重试。")
 
+    async def _handle_monitor_command(
+        self,
+        event: AstrMessageEvent,
+        site_key: str,
+        site_name: str,
+    ):
+        args = event.message_str.strip().split(maxsplit=1)
+        action = args[1].strip() if len(args) > 1 else "on"
+        action_lower = action.lower()
+        disable_actions = {"off", "close", "disable", "关闭", "取消", "停止"}
+        enable = action_lower not in disable_actions and action not in disable_actions
+        session = event.unified_msg_origin
+
+        changed = await self._set_site_monitor_subscription(site_key, session, enable)
+        if enable:
+            if changed:
+                logger.info(
+                    f"[状态监控] 已订阅 {site_name}: session={session}, "
+                    f"interval={self.monitor_check_interval}s"
+                )
+                yield event.plain_result(f"✅ 已订阅 {site_name} 状态监控通知。")
+            else:
+                yield event.plain_result(
+                    f"ℹ️ 当前会话已在 {site_name} 状态监控订阅中。\n"
+                    "可使用 `off` / `关闭` / `取消` 取消订阅。"
+                )
+            return
+
+        if changed:
+            yield event.plain_result(f"✅ 已取消 {site_name} 状态监控订阅。")
+        else:
+            yield event.plain_result(f"ℹ️ 当前会话未订阅 {site_name} 状态监控。")
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("ssbmon", alias={"监控搜书吧"})
+    async def ssb_monitor_command(self, event: AstrMessageEvent):
+        """订阅或取消订阅搜书吧状态监控（管理员）"""
+        async for result in self._handle_monitor_command(event, "ssb", "搜书吧"):
+            yield result
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("sxsymon", alias={"监控尚香书苑"})
+    async def sxsy_monitor_command(self, event: AstrMessageEvent):
+        """订阅或取消订阅尚香书苑状态监控（管理员）"""
+        async for result in self._handle_monitor_command(event, "sxsy", "尚香书苑"):
+            yield result
+
     @filter.command("sis", alias={'第一会所'})
     async def sis_command(self, event: AstrMessageEvent):
         """获取第一会所的网址"""
@@ -501,4 +825,11 @@ class SoushuBaLinkExtractorPlugin(Star):
         yield event.plain_result("❌ 抱歉，有爱爱导航站目前无法访问。")
 
     async def terminate(self):
+        self._monitor_stop_event.set()
+        if self._monitor_task and not self._monitor_task.done():
+            self._monitor_task.cancel()
+            try:
+                await self._monitor_task
+            except asyncio.CancelledError:
+                pass
         logger.info("搜书吧链接获取插件已卸载")
