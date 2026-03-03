@@ -271,8 +271,13 @@ class SoushuBaLinkExtractorPlugin(Star):
             logger.info(f"[状态监控] {site_name} 首次异常后复检恢复，忽略本次异常告警。")
             return True, retry_detail, retry_real_url
 
-        merged_detail = f"{detail}；复检仍异常: {retry_detail}"
-        return False, merged_detail, retry_real_url or real_url
+        # 复检仍异常时，返回简短原因，避免通知文案过长。
+        concise_detail = str(retry_detail or detail or "").strip()
+        if "->" in concise_detail:
+            concise_detail = concise_detail.split("->", 1)[1].strip()
+        if not concise_detail:
+            concise_detail = "访问异常"
+        return False, concise_detail, retry_real_url or real_url
 
     async def _handle_site_transition(
         self,
