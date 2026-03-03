@@ -22,6 +22,7 @@ from astrbot.api import logger
 )
 class SoushuBaLinkExtractorPlugin(Star):
     MONITOR_SUBSCRIBERS_KEY = "status_monitor_subscribers"
+    MONITOR_FAILURE_RECHECK_DELAY_SECONDS = 10
 
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -41,6 +42,7 @@ class SoushuBaLinkExtractorPlugin(Star):
             self.monitor_check_interval = max(int(raw_interval), 10)
         except (TypeError, ValueError):
             self.monitor_check_interval = 3600
+        self.monitor_failure_recheck_delay = self.MONITOR_FAILURE_RECHECK_DELAY_SECONDS
 
         self.data_dir = StarTools.get_data_dir("astrbot_plugin_soushuba")
         os.makedirs(self.data_dir, exist_ok=True)
@@ -60,6 +62,7 @@ class SoushuBaLinkExtractorPlugin(Star):
         self._monitor_task = asyncio.create_task(self._monitor_loop())
         logger.info(
             f"[状态监控] 后台任务已启动，检测间隔: {self.monitor_check_interval}s, "
+            f"异常复检延迟: {self.monitor_failure_recheck_delay}s, "
             f"搜书吧订阅: {len(self._monitor_subscribers['ssb'])}, "
             f"尚香书苑订阅: {len(self._monitor_subscribers['sxsy'])}"
         )
@@ -235,6 +238,42 @@ class SoushuBaLinkExtractorPlugin(Star):
             except Exception as e:
                 logger.error(f"[状态监控] 向会话 {session} 发送通知失败: {e}")
 
+    async def _confirm_failure_with_recheck(
+        self,
+        site_key: str,
+        site_name: str,
+        is_ok: bool,
+        detail: str,
+        real_url: Optional[str],
+        session: aiohttp.ClientSession,
+        resolver: Callable[[aiohttp.ClientSession], Awaitable[Optional[str]]],
+    ) -> tuple[bool, str, Optional[str]]:
+        """首次检测异常时延迟复检，复检仍异常才判定为真实异常。"""
+        if is_ok:
+            return is_ok, detail, real_url
+        state = self._monitor_states.get(site_key, {})
+        if bool(state.get("failed", False)):
+            return is_ok, detail, real_url
+        if self.monitor_failure_recheck_delay >= self.monitor_check_interval:
+            logger.debug(
+                f"[状态监控] {site_name} 跳过异常复检: "
+                f"复检延迟({self.monitor_failure_recheck_delay}s) >= 检测间隔({self.monitor_check_interval}s)"
+            )
+            return is_ok, detail, real_url
+
+        logger.warning(
+            f"[状态监控] {site_name} 首次异常，{self.monitor_failure_recheck_delay}s 后复检一次: {detail}"
+        )
+        await asyncio.sleep(self.monitor_failure_recheck_delay)
+
+        retry_ok, retry_detail, retry_real_url = await self._check_site_status(site_key, session, resolver)
+        if retry_ok:
+            logger.info(f"[状态监控] {site_name} 首次异常后复检恢复，忽略本次异常告警。")
+            return True, retry_detail, retry_real_url
+
+        merged_detail = f"{detail}；复检仍异常: {retry_detail}"
+        return False, merged_detail, retry_real_url or real_url
+
     async def _handle_site_transition(
         self,
         site_key: str,
@@ -290,11 +329,29 @@ class SoushuBaLinkExtractorPlugin(Star):
                     session,
                     self._resolve_ssb_monitor_url,
                 )
+                ok, detail, real_url = await self._confirm_failure_with_recheck(
+                    "ssb",
+                    "搜书吧",
+                    ok,
+                    detail,
+                    real_url,
+                    session,
+                    self._resolve_ssb_monitor_url,
+                )
                 await self._handle_site_transition("ssb", "搜书吧", ok, detail, real_url)
 
             if has_sxsy_subscribers:
                 ok, detail, real_url = await self._check_site_status(
                     "sxsy",
+                    session,
+                    self._resolve_sxsy_monitor_url,
+                )
+                ok, detail, real_url = await self._confirm_failure_with_recheck(
+                    "sxsy",
+                    "尚香书苑",
+                    ok,
+                    detail,
+                    real_url,
                     session,
                     self._resolve_sxsy_monitor_url,
                 )
