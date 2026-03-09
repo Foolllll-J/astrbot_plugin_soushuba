@@ -1,4 +1,4 @@
-﻿<div align="center">
+<div align="center">
 
 # 📚 搜书吧助手
 
@@ -41,7 +41,7 @@
 * `/sxsy` 或 `/尚香书苑`：获取尚香书苑最新地址。
 * `/sxsy <关键词>`：在尚香书苑内搜索书籍。
 
-说明：`/sxsy <关键词>` 需要配置 `sxsy_cookie`。
+说明：`/sxsy <关键词>` 需要配置 `sxsy_url` 与 `sxsy_cookie`（用于搜索和状态监控的站点地址）。
 
 ### 3. 其他站点
 
@@ -66,6 +66,7 @@
 | 配置项 | 说明 | 格式/示例 |
 | :-- | :-- | :-- |
 | `ssb_auth` | 搜书吧账号和密码，用于登录搜索 | `账号&密码` |
+| `sxsy_url` | 尚香书苑网址 | `` |
 | `sxsy_cookie` | 尚香书苑浏览器 Cookie | `__cf_bm=xxx; ...` |
 | `search_result_count` | 每次搜索返回的结果数（5-20） | `10` |
 | `monitor_check_interval` | 监控检测间隔（秒），默认 3600，最小 10 | `3600` |

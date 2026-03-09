@@ -1,4 +1,4 @@
-﻿import json
+import json
 import asyncio
 import aiohttp
 from bs4 import BeautifulSoup
@@ -12,14 +12,9 @@ import time
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register, StarTools
 from astrbot.api import logger
+import astrbot.api.message_components as Comp
 
-@register(
-    "astrbot_plugin_soushuba",
-    "Foolllll",
-    "搜书吧助手",
-    "1.2",
-    "https://github.com/Foolllll-J/astrbot_plugin_soushuba",
-)
+
 class SoushuBaLinkExtractorPlugin(Star):
     MONITOR_SUBSCRIBERS_KEY = "status_monitor_subscribers"
     MONITOR_FAILURE_RECHECK_DELAY_SECONDS = 10
@@ -100,6 +95,74 @@ class SoushuBaLinkExtractorPlugin(Star):
             return f"{parsed.scheme}://{parsed.netloc}/"
         return url
 
+    def _get_sxsy_search_base_url(self) -> Optional[str]:
+        raw_url = str(self.plugin_config.get("sxsy_url", "") or "").strip()
+        if not raw_url:
+            return None
+        if not raw_url.startswith(("http://", "https://")):
+            raw_url = f"https://{raw_url}"
+        parsed = urlparse(raw_url)
+        if not parsed.scheme or not parsed.netloc:
+            return None
+        return f"{parsed.scheme}://{parsed.netloc}/"
+
+    async def _extract_sxsy_nav_image_url(
+        self,
+        session: aiohttp.ClientSession,
+        nav_url: str = "https://sxsy.org/",
+    ) -> Optional[str]:
+        try:
+            async with session.get(
+                nav_url,
+                headers=self.headers,
+                timeout=10,
+                ssl=False,
+                allow_redirects=True,
+            ) as response:
+                if response.status != 200:
+                    return None
+                final_url = str(response.url)
+                html_content = await self._get_text(response)
+
+            soup = BeautifulSoup(html_content, "lxml")
+            og_image = soup.find("meta", attrs={"property": "og:image"})
+            if og_image and og_image.get("content"):
+                return urljoin(final_url, og_image["content"].strip())
+
+            fallback_images: List[str] = []
+            preferred_selectors = (
+                "#content img",
+                ".content img",
+                ".entry img",
+                ".post img",
+                "article img",
+                "main img",
+                "img",
+            )
+            for selector in preferred_selectors:
+                for img_tag in soup.select(selector):
+                    src = (
+                        img_tag.get("src")
+                        or img_tag.get("data-src")
+                        or img_tag.get("data-original")
+                        or ""
+                    ).strip()
+                    if not src or src.startswith("data:"):
+                        continue
+                    image_url = urljoin(final_url, src)
+                    if image_url not in fallback_images:
+                        fallback_images.append(image_url)
+                    lowered = image_url.lower()
+                    if any(token in lowered for token in ("logo", "icon", "avatar", "favicon")):
+                        continue
+                    return image_url
+
+            if fallback_images:
+                return fallback_images[0]
+        except Exception as e:
+            logger.warning(f"[状态监控] 获取尚香书苑真实地址失败: {e}")
+        return None
+
     async def _resolve_ssb_monitor_url(self, session: aiohttp.ClientSession) -> Optional[str]:
         for domain_url in self.target_domains:
             link_url = await self._extract_link_from_url(session, domain_url)
@@ -108,19 +171,12 @@ class SoushuBaLinkExtractorPlugin(Star):
         return None
 
     async def _resolve_sxsy_monitor_url(self, session: aiohttp.ClientSession) -> Optional[str]:
-        host = "sxsy87.com"
-        try:
-            async with session.get("https://sxsy.org/", headers=self.headers, timeout=10, ssl=False) as response:
-                if response.status == 200:
-                    text = await self._get_text(response)
-                    match = re.search(r'href="https://([^"]+)"', text)
-                    if match:
-                        host = match.group(1).strip()
-        except Exception as e:
-            logger.warning(f"[状态监控] 获取尚香书苑真实地址失败: {e}")
-        if not host:
-            return None
-        return self._normalize_base_url(f"https://{host}/")
+        configured_base_url = self._get_sxsy_search_base_url()
+        if configured_base_url:
+            return configured_base_url
+
+        logger.warning("[状态监控] 未配置 sxsy_url，无法检测尚香书苑状态")
+        return None
 
     def _check_ssb_page_health(self, html: str) -> Optional[str]:
         content = html.lower()
@@ -467,7 +523,7 @@ class SoushuBaLinkExtractorPlugin(Star):
         """参考 ssb.py 的登录逻辑"""
         try:
             logger.debug(f"[SSB 登录] 开始登录流程: {username} @ {base_url}")
-            # 1. 获取 formhash
+            # 1. 获取表单校验值
             login_url = urljoin(base_url, "member.php?mod=logging&action=login")
             async with session.get(login_url, headers=self.headers, timeout=15, ssl=False) as resp:
                 html = await self._get_text(resp)
@@ -543,7 +599,7 @@ class SoushuBaLinkExtractorPlugin(Star):
 
         async with aiohttp.ClientSession() as session:
             try:
-                # 1. 获取最新 base_url
+                # 1. 获取最新基础地址
                 base_url = None
                 for domain_url in self.target_domains:
                     base_url = await self._extract_link_from_url(session, domain_url)
@@ -557,7 +613,7 @@ class SoushuBaLinkExtractorPlugin(Star):
                 base_url = f"{parsed.scheme}://{parsed.netloc}/"
                 logger.debug(f"[SSB 搜索] 使用 Base URL: {base_url}")
 
-                # 2. 加载 Cookie 并校验
+                # 2. 加载登录凭证并校验
                 cookies = self._load_ssb_cookies(username)
                 if cookies:
                     session.cookie_jar.update_cookies(cookies)
@@ -585,7 +641,7 @@ class SoushuBaLinkExtractorPlugin(Star):
                 # 3. 搜索
                 search_url = urljoin(base_url, "search.php?mod=forum")
                 
-                # 获取 formhash
+                # 获取表单校验值
                 formhash = ""
                 async with session.get(search_url, headers=self.headers, timeout=10, ssl=False) as resp:
                     if resp.status != 200:
@@ -663,20 +719,20 @@ class SoushuBaLinkExtractorPlugin(Star):
         """尚香书苑搜索"""
         args = event.message_str.strip().split(maxsplit=1)
         if len(args) < 2:
-            # 基础网址获取逻辑
+            # 尚香书苑导航使用图片展示，直接返回导航图。
             async with aiohttp.ClientSession() as session:
                 try:
-                    url = "https://sxsy.org/"
-                    async with session.get(url, headers=self.headers, timeout=10, ssl=False) as response:
-                        if response.status == 200:
-                            text = await self._get_text(response)
-                            match = re.search(r'href="https://([^"]+)"', text)
-                            if match:
-                                yield event.plain_result(f"🌸 成功找到尚香书苑最新网址：\nhttps://{match.group(1)}")
-                                return
+                    nav_image_url = await self._extract_sxsy_nav_image_url(session)
+                    if nav_image_url:
+                        chain = [
+                            Comp.Plain("🌸 成功获取尚香书苑最新网址："),
+                            Comp.Image.fromURL(nav_image_url),
+                        ]
+                        yield event.chain_result(chain)
+                        return
                 except Exception as e:
-                    logger.error(f"[获取sxsy host] 错误: {e}")
-            yield event.plain_result("❌ 抱歉，尚香书苑导航站目前无法访问。")
+                    logger.error(f"[获取sxsy导航图] 错误: {e}")
+            yield event.plain_result("❌ 抱歉，尚香书苑导航站目前无法访问或未找到导航图。")
             return
 
         keyword = args[1]
@@ -685,29 +741,27 @@ class SoushuBaLinkExtractorPlugin(Star):
             yield event.plain_result("❌ 请先在插件配置中设置 sxsy_cookie。")
             return
 
+        base_url = self._get_sxsy_search_base_url()
+        if not base_url:
+            yield event.plain_result("❌ 请先在插件配置中设置 sxsy_url（尚香书苑网址）后再搜索。")
+            return
+
         yield event.plain_result(f"🔍 正在尚香书苑搜索: {keyword}...")
 
         async with aiohttp.ClientSession() as session:
             try:
-                # 1. 获取最新 host
-                host = "sxsy87.com"
-                try:
-                    async with session.get("https://sxsy.org/", timeout=10, ssl=False) as resp:
-                        if resp.status == 200:
-                            t = await self._get_text(resp)
-                            m = re.search(r'href="https://([^"]+)"', t)
-                            if m: host = m.group(1)
-                except: pass
+                # 1. 使用配置项的站点地址进行搜索。
+                host = urlparse(base_url).netloc
 
-                # 2. 准备 POST 请求
+                # 2. 组装搜索请求。
                 headers = {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
                     'Cookie': cookie,
-                    'Referer': f"https://{host}/search.php?mod=forum"
+                    'Referer': urljoin(base_url, "search.php?mod=forum")
                 }
-                post_url = f"https://{host}/search.php?mod=forum"
+                post_url = urljoin(base_url, "search.php?mod=forum")
 
-                # 提取 formhash
+                # 提取表单校验值。
                 formhash = ""
                 try:
                     async with session.get(post_url, headers=headers, timeout=10, ssl=False) as f_resp:
@@ -717,7 +771,8 @@ class SoushuBaLinkExtractorPlugin(Star):
                             return
                         f_html = await self._get_text(f_resp)
                         fh_match = re.search(r'name="formhash" value="([a-f0-9]+)"', f_html)
-                        if fh_match: formhash = fh_match.group(1)
+                        if fh_match:
+                            formhash = fh_match.group(1)
                 except Exception as e:
                     logger.error(f"[sxsy] 获取 formhash 异常: {e}")
                     yield event.plain_result(f"❌ 尚香书苑访问超时或网络错误")
@@ -730,7 +785,7 @@ class SoushuBaLinkExtractorPlugin(Star):
                     'formhash': formhash
                 }
 
-                # 3. 发送 POST 搜索
+                # 3. 发送搜索请求。
                 logger.debug(f"[sxsy 搜索] 尝试 POST 搜索: {post_url}")
                 async with session.post(post_url, data=post_data, headers=headers, timeout=15, ssl=False) as p_resp:
                     if p_resp.status != 200:
@@ -740,18 +795,16 @@ class SoushuBaLinkExtractorPlugin(Star):
                     html = await self._get_text(p_resp)
                     logger.debug(f"[sxsy 搜索] POST 响应 URL: {p_resp.url}, 长度: {len(html)}")
 
-                # 4. 检查异常状态
-                # CK 失效特征：页面标题包含“登录”，或者 body 带有 pg_logging 类，或者包含特定的登录 action 链接
+                # 4. 检查异常状态。
                 if '<title>登录 -  尚香书苑  </title>' in html or 'class="pg_logging"' in html or 'member.php?mod=logging&action=login' in html:
                     yield event.plain_result("❌ Cookie 已失效或未登录，请更新CK。")
                     return
-                
-                # 搜索无结果特征：包含“对不起，没有找到匹配结果。”或者结果数为 0
+
                 if "对不起，没有找到匹配结果。" in html or "相关内容 0 个" in html:
                     yield event.plain_result(f"📦 尚香书苑未找到与 “{keyword}” 相关的搜索结果。")
                     return
 
-                # 5. 解析结果
+                # 5. 解析搜索结果。
                 soup = BeautifulSoup(html, 'lxml')
                 items = soup.select('div#threadlist ul li.pbw') or soup.select('div.slst ul li.pbw')
                 logger.info(f"[sxsy 搜索] 解析到 {len(items)} 条结果")
@@ -763,17 +816,17 @@ class SoushuBaLinkExtractorPlugin(Star):
                 results = []
                 for i, item in enumerate(items[:self.search_result_count], 1):
                     title_el = item.select_one('h3.xs3 a')
-                    if not title_el: continue
-                    
+                    if not title_el:
+                        continue
+
                     title = "".join(title_el.find_all(string=True, recursive=True)).strip()
-                    link = urljoin(f"https://{host}/", title_el['href'])
-                    
-                    # 提取时间
+                    link = urljoin(base_url, title_el['href'])
+
                     time_text = "未知"
-                    time_span = item.select_one('p span') # Discuz 搜索页通常第一个 span 是时间
+                    time_span = item.select_one('p span')
                     if time_span:
                         time_text = time_span.get_text(strip=True)
-                    
+
                     results.append(f"【{i}】{title}\n📅 时间: {time_text}\n🔗 {link}")
 
                 reply = f"✅ 为您找到以下关于 “{keyword}” 的结果：\n\n" + "\n\n".join(results)
