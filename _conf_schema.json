@@ -6,13 +6,13 @@
         "default": ""
     },
     "sxsy_url": {
-        "description": "尚香书苑网址",
+        "description": "SXSY 网址",
         "type": "string",
-        "hint": "用于尚香书苑搜索与监控，例如：https://sxsy18.com",
+        "hint": "用于 SXSY 搜索与监控",
         "default": ""
     },
     "sxsy_cookie": {
-        "description": "尚香书苑Cookie",
+        "description": "SXSY Cookie",
         "type": "string",
         "hint": "用于搜索，可以从浏览器获取",
         "default": ""
@@ -38,5 +38,25 @@
             "step": 10
         },
         "default": 3600
+    },
+    "download_allow_users": {
+        "description": "允许下载用户",
+        "hint": "允许使用下载功能的用户 ID 列表。默认 0 表示仅管理员可用；留空表示所有人可用。",
+        "type": "list",
+        "default": [
+            "0"
+        ]
+    },
+    "daily_user_coin_limit": {
+        "description": "单用户每日金币上限",
+        "hint": "0 表示不限制",
+        "type": "int",
+        "default": 0
+    },
+    "daily_total_coin_limit": {
+        "description": "全局每日金币上限",
+        "hint": "0 表示不限制",
+        "type": "int",
+        "default": 0
     }
 }
