@@ -163,6 +163,8 @@ class SiteMonitorService:
         state = self._monitor_states.get(site_key, {})
         if bool(state.get("failed", False)):
             return is_ok, detail, real_url
+        if self.monitor_failure_recheck_delay <= 0:
+            return is_ok, detail, real_url
         if self.monitor_failure_recheck_delay >= self.monitor_check_interval:
             logger.debug(
                 f"[状态监控] {site_name} 跳过异常复检: "
@@ -263,14 +265,14 @@ class SiteMonitorService:
                 )
                 ok, detail, real_url = await self._confirm_failure_with_recheck(
                     "sxsy",
-                    "SXSY",
+                    "尚香书苑",
                     ok,
                     detail,
                     real_url,
                     session,
                     lambda sess: self._resolve_site_monitor_url("sxsy", sess),
                 )
-                await self._handle_site_transition("sxsy", "SXSY", ok, detail, real_url)
+                await self._handle_site_transition("sxsy", "尚香书苑", ok, detail, real_url)
 
     async def _monitor_loop(self):
         while not self._monitor_stop_event.is_set():

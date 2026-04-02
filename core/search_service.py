@@ -274,11 +274,11 @@ class SearchService:
     ) -> tuple[bool, str, list[SsbSearchItem]]:
         cookie = self.plugin_config.get("sxsy_cookie", "") if self.plugin_config else ""
         if not cookie:
-            return False, "❌ 请先在插件配置中设置 sxsy_cookie。", []
+            return False, "❌ 请先在插件配置中设置尚香书苑 Cookie。", []
 
         base_url = self.url_resolver.get_sxsy_search_base_url()
         if not base_url:
-            return False, "❌ 请先在插件配置中设置 sxsy_url（尚香书苑网址）后再搜索。", []
+            return False, "❌ 请先在插件配置中设置尚香书苑网址后再搜索。", []
 
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",

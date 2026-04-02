@@ -6,13 +6,13 @@
         "default": ""
     },
     "sxsy_url": {
-        "description": "SXSY 网址",
+        "description": "尚香书苑网址",
         "type": "string",
-        "hint": "用于 SXSY 搜索与监控",
+        "hint": "用于尚香书苑搜索与监控",
         "default": ""
     },
     "sxsy_cookie": {
-        "description": "SXSY Cookie",
+        "description": "尚香书苑 Cookie",
         "type": "string",
         "hint": "用于搜索，可以从浏览器获取",
         "default": ""
@@ -38,6 +38,17 @@
             "step": 10
         },
         "default": 3600
+    },
+    "monitor_failure_recheck_delay": {
+        "description": "网站异常复核间隔(秒)",
+        "hint": "检测到异常后，延迟多久再复核一次；设置为 0 表示不复核",
+        "type": "int",
+        "slider": {
+            "min": 0,
+            "max": 3600,
+            "step": 1
+        },
+        "default": 300
     },
     "download_allow_users": {
         "description": "允许下载用户",

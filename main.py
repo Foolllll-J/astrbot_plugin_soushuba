@@ -21,7 +21,8 @@ from .core.cache import UserSearchCache
 
 class SoushuBaLinkExtractorPlugin(Star):
     MONITOR_SUBSCRIBERS_KEY = "status_monitor_subscribers"
-    MONITOR_FAILURE_RECHECK_DELAY_SECONDS = 10
+    DEFAULT_MONITOR_CHECK_INTERVAL = 3600
+    DEFAULT_MONITOR_FAILURE_RECHECK_DELAY = 300
 
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -36,12 +37,13 @@ class SoushuBaLinkExtractorPlugin(Star):
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         }
-        raw_interval = self.plugin_config.get("monitor_check_interval", 3600)
-        try:
-            self.monitor_check_interval = max(int(raw_interval), 10)
-        except (TypeError, ValueError):
-            self.monitor_check_interval = 3600
-        self.monitor_failure_recheck_delay = self.MONITOR_FAILURE_RECHECK_DELAY_SECONDS
+        self.monitor_check_interval = self.plugin_config.get(
+            "monitor_check_interval", self.DEFAULT_MONITOR_CHECK_INTERVAL
+        )
+        self.monitor_failure_recheck_delay = self.plugin_config.get(
+            "monitor_failure_recheck_delay",
+            self.DEFAULT_MONITOR_FAILURE_RECHECK_DELAY,
+        )
 
         self.data_dir = StarTools.get_data_dir("astrbot_plugin_soushuba")
         os.makedirs(self.data_dir, exist_ok=True)
@@ -198,8 +200,8 @@ class SoushuBaLinkExtractorPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("sxsymon", alias={"监控尚香书苑"})
     async def sxsy_monitor_command(self, event: AstrMessageEvent):
-        """订阅或取消订阅 SXSY 状态监控（管理员）"""
-        async for result in self._handle_monitor_command(event, "sxsy", "SXSY"):
+        """订阅或取消订阅尚香书苑状态监控（管理员）"""
+        async for result in self._handle_monitor_command(event, "sxsy", "尚香书苑"):
             yield result
 
     @filter.command("sis", alias={'第一会所'})
