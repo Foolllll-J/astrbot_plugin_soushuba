@@ -679,6 +679,13 @@ console.log(JSON.stringify(captured));
     ) -> List[SsbAttachment]:
         soup = BeautifulSoup(html, "lxml")
         attachments: List[SsbAttachment] = []
+
+        def _pick_better_name(current: str, candidate: str) -> str:
+            def _score(value: str) -> tuple[int, int]:
+                has_extension = int(bool(re.search(r"\.[A-Za-z0-9]{1,8}$", value)))
+                return (has_extension, len(value))
+
+            return candidate if _score(candidate) > _score(current) else current
         ignore_texts = {"购买", "[购买]", "记录", "[记录]"}
 
         for a in soup.find_all("a", href=True):
@@ -717,12 +724,18 @@ console.log(JSON.stringify(captured));
             attachments.append(att)
 
         deduped: List[SsbAttachment] = []
-        seen = set()
+        merged: dict[tuple[str, str], SsbAttachment] = {}
         for item in attachments:
-            key = (item.name, item.url)
-            if key in seen:
+            key = ("target", item.download_url or item.pay_url or item.url)
+            existing = merged.get(key)
+            if existing:
+                existing.name = _pick_better_name(existing.name, item.name)
+                existing.aid = existing.aid or item.aid
+                existing.pay_url = existing.pay_url or item.pay_url
+                existing.download_url = existing.download_url or item.download_url
+                existing.post_url = existing.post_url or item.post_url
                 continue
-            seen.add(key)
+            merged[key] = item
             deduped.append(item)
 
         return deduped
@@ -819,6 +832,13 @@ console.log(JSON.stringify(captured));
         attachments: List[SsbAttachment] = []
         ignore_texts = {"购买", "[购买]", "记录", "[记录]"}
 
+        def _pick_better_name(current: str, candidate: str) -> str:
+            def _score(value: str) -> tuple[int, int]:
+                has_extension = int(bool(re.search(r"\.[A-Za-z0-9]{1,8}$", value)))
+                return (has_extension, len(value))
+
+            return candidate if _score(candidate) > _score(current) else current
+
         for a in soup.find_all("a"):
             href = str(a.get("href") or "").strip()
             onclick = str(a.get("onclick") or "").strip()
@@ -868,12 +888,18 @@ console.log(JSON.stringify(captured));
             attachments.append(att)
 
         deduped: List[SsbAttachment] = []
-        seen = set()
+        merged: dict[tuple[str, str], SsbAttachment] = {}
         for item in attachments:
-            key = (item.name, item.url)
-            if key in seen:
+            key = ("target", item.download_url or item.pay_url or item.url)
+            existing = merged.get(key)
+            if existing:
+                existing.name = _pick_better_name(existing.name, item.name)
+                existing.aid = existing.aid or item.aid
+                existing.pay_url = existing.pay_url or item.pay_url
+                existing.download_url = existing.download_url or item.download_url
+                existing.post_url = existing.post_url or item.post_url
                 continue
-            seen.add(key)
+            merged[key] = item
             deduped.append(item)
 
         if not deduped and "action=attachpay" in html:
