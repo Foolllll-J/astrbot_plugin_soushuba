@@ -4,6 +4,7 @@ from astrbot.api import logger
 import astrbot.api.message_components as Comp
 
 from .cache import UserSearchCache, SsbSearchItem, SsbAttachment
+from .http_session import ProxyClientSession
 from .search_service import SearchService
 from .download_service import SsbDownloadService
 
@@ -14,10 +15,12 @@ class SxsyFlow:
         search_service: SearchService,
         download_service: SsbDownloadService,
         cache: UserSearchCache,
+        session_factory,
     ):
         self.search_service = search_service
         self.download_service = download_service
         self.cache = cache
+        self.session_factory = session_factory
 
     def _get_user_id(self, event) -> str:
         return str(event.get_sender_id())
@@ -30,7 +33,7 @@ class SxsyFlow:
 
     async def _handle_search(self, event, keyword: str):
         yield event.plain_result(f"🔍 正在尚香书苑搜索: {keyword}...")
-        async with aiohttp.ClientSession() as session:
+        async with self.session_factory() as session:
             ok, message, items = await self.search_service.sxsy_search(session, keyword)
             yield event.plain_result(message)
             if not ok:
@@ -58,7 +61,7 @@ class SxsyFlow:
                 return
             post = items[index - 1]
 
-        async with aiohttp.ClientSession() as session:
+        async with self.session_factory() as session:
             attachments = await self.download_service.fetch_sxsy_post_attachments(
                 session, post.link
             )
@@ -95,7 +98,7 @@ class SxsyFlow:
             yield event.plain_result("当前没有待选择的附件，请先选择帖子。")
             return
 
-        async with aiohttp.ClientSession() as session:
+        async with self.session_factory() as session:
             if index == 0:
                 yield event.plain_result(f"开始下载全部附件，共 {len(attachments)} 个...")
                 for att in attachments:
@@ -116,7 +119,7 @@ class SxsyFlow:
             self.cache.clear_pending_attachments(user_id)
 
     async def _download_and_send(
-        self, event, session: aiohttp.ClientSession, att: SsbAttachment
+        self, event, session: ProxyClientSession, att: SsbAttachment
     ) -> list:
         ok, msg, file_path, spent_coin, remain_after = await self.download_service.download_sxsy_attachment(
             session, att, self._get_user_id(event), event.is_admin()

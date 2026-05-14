@@ -4,6 +4,7 @@ from astrbot.api import logger
 import astrbot.api.message_components as Comp
 
 from .cache import UserSearchCache, SsbSearchItem, SsbAttachment
+from .http_session import ProxyClientSession
 from .search_service import SearchService
 from .download_service import SsbDownloadService
 
@@ -15,11 +16,13 @@ class SsbFlow:
         download_service: SsbDownloadService,
         cache: UserSearchCache,
         target_domains: list[str],
+        session_factory,
     ):
         self.search_service = search_service
         self.download_service = download_service
         self.cache = cache
         self.target_domains = target_domains
+        self.session_factory = session_factory
 
     def _get_user_id(self, event) -> str:
         return str(event.get_sender_id())
@@ -36,7 +39,7 @@ class SsbFlow:
             return
 
         yield event.plain_result(f"🔍 正在搜书吧搜索: {keyword}...")
-        async with aiohttp.ClientSession() as session:
+        async with self.session_factory() as session:
             ok, message, items = await self.search_service.ssb_search(
                 session, keyword, self.target_domains
             )
@@ -66,7 +69,7 @@ class SsbFlow:
                 return
             post = items[index - 1]
         logger.debug(f"[SSB 选择] 用户 {user_id} 选择帖子: {post.title} {post.link}")
-        async with aiohttp.ClientSession() as session:
+        async with self.session_factory() as session:
             base_url = self.download_service.url_resolver.normalize_base_url(post.link)
             ok, msg = await self.download_service.ensure_login(session, base_url)
             logger.debug(f"[SSB 登录] {msg}")
@@ -110,7 +113,7 @@ class SsbFlow:
             yield event.plain_result("当前没有待选择的附件，请先选择帖子。")
             return
 
-        async with aiohttp.ClientSession() as session:
+        async with self.session_factory() as session:
             if index == 0:
                 yield event.plain_result(f"开始下载全部附件，共 {len(attachments)} 个...")
                 for att in attachments:
@@ -131,7 +134,7 @@ class SsbFlow:
             self.cache.clear_pending_attachments(user_id)
 
     async def _download_and_send(
-        self, event, session: aiohttp.ClientSession, att: SsbAttachment
+        self, event, session: ProxyClientSession, att: SsbAttachment
     ) -> list:
         ok, msg, file_path, spent_coin, remain_after = await self.download_service.download_attachment(
             session, att, self._get_user_id(event), event.is_admin()
@@ -176,7 +179,7 @@ class SsbFlow:
 
     async def handle(self, event, arg: str | None):
         if not arg:
-            async with aiohttp.ClientSession() as session:
+            async with self.session_factory() as session:
                 link_url = await self.search_service.find_ssb_latest_url(
                     session, self.target_domains
                 )

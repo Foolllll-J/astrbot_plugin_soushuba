@@ -69,5 +69,11 @@
         "hint": "0 表示不限制",
         "type": "int",
         "default": 0
+    },
+    "proxy_url": {
+        "description": "代理地址",
+        "type": "string",
+        "hint": "留空则直连；填写后插件全部外部访问都将走该代理，例如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080",
+        "default": ""
     }
 }

@@ -13,6 +13,7 @@ import astrbot.api.message_components as Comp
 from .core.url_resolver import UrlResolver
 from .core.search_service import SearchService
 from .core.download_service import SsbDownloadService
+from .core.http_session import build_session_factory
 from .core.ssb_flow import SsbFlow
 from .core.sxsy_flow import SxsyFlow
 from .core.site_monitor import SiteMonitorService
@@ -44,6 +45,7 @@ class SoushuBaLinkExtractorPlugin(Star):
             "monitor_failure_recheck_delay",
             self.DEFAULT_MONITOR_FAILURE_RECHECK_DELAY,
         )
+        self.session_factory = build_session_factory(self.plugin_config)
 
         self.data_dir = StarTools.get_data_dir("astrbot_plugin_soushuba")
         os.makedirs(self.data_dir, exist_ok=True)
@@ -72,12 +74,14 @@ class SoushuBaLinkExtractorPlugin(Star):
             self.ssb_download,
             self.ssb_cache,
             self.target_domains,
+            self.session_factory,
         )
         self.sxsy_cache = UserSearchCache()
         self.sxsy_flow = SxsyFlow(
             self.search_service,
             self.ssb_download,
             self.sxsy_cache,
+            self.session_factory,
         )
         self.site_monitor = SiteMonitorService(
             url_resolver=self.url_resolver,
@@ -86,6 +90,7 @@ class SoushuBaLinkExtractorPlugin(Star):
             monitor_failure_recheck_delay=self.monitor_failure_recheck_delay,
             get_kv_data=self.get_kv_data,
             put_kv_data=self.put_kv_data,
+            session_factory=self.session_factory,
             subscribers_key=self.MONITOR_SUBSCRIBERS_KEY,
         )
 
@@ -132,7 +137,7 @@ class SoushuBaLinkExtractorPlugin(Star):
         args = event.message_str.strip().split(maxsplit=1)
         if len(args) < 2:
             # SXSY 导航使用图片展示，直接返回导航图。
-            async with aiohttp.ClientSession() as session:
+            async with self.session_factory() as session:
                 try:
                     nav_image_url = await self.url_resolver.extract_sxsy_nav_image_url(
                         session
@@ -208,7 +213,7 @@ class SoushuBaLinkExtractorPlugin(Star):
     async def sis_command(self, event: AstrMessageEvent):
         """获取第一会所的网址"""
         target_navs = ["http://sis001dz.org/", "http://www.sis001home.com/"]
-        async with aiohttp.ClientSession() as session:
+        async with self.session_factory() as session:
             for url in target_navs:
                 try:
                     async with session.get(url, headers=self.headers, timeout=10) as response:
@@ -226,7 +231,7 @@ class SoushuBaLinkExtractorPlugin(Star):
     async def dybz_command(self, event: AstrMessageEvent):
         """获取第一版主的网址"""
         target_navs = ["https://www.龙腾小说.com/", "http://01bz.cc/"]
-        async with aiohttp.ClientSession() as session:
+        async with self.session_factory() as session:
             for url in target_navs:
                 try:
                     async with session.get(url, headers=self.headers, timeout=10) as response:
@@ -244,7 +249,7 @@ class SoushuBaLinkExtractorPlugin(Star):
     async def uaa_command(self, event: AstrMessageEvent):
         """获取有爱爱的网址"""
         url = "https://uaadizhi.com/"
-        async with aiohttp.ClientSession() as session:
+        async with self.session_factory() as session:
             try:
                 async with session.get(url, headers=self.headers, timeout=10) as response:
                     if response.status == 200:

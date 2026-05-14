@@ -6,6 +6,7 @@ import aiohttp
 from astrbot.api import logger
 from astrbot.api.event import MessageEventResult
 
+from .http_session import ProxyClientSession
 from .url_resolver import UrlResolver
 
 
@@ -18,6 +19,7 @@ class SiteMonitorService:
         monitor_failure_recheck_delay: int,
         get_kv_data: Callable[[str, dict], Awaitable[dict]],
         put_kv_data: Callable[[str, dict], Awaitable[None]],
+        session_factory,
         subscribers_key: str = "status_monitor_subscribers",
     ):
         self.url_resolver = url_resolver
@@ -26,6 +28,7 @@ class SiteMonitorService:
         self.monitor_failure_recheck_delay = monitor_failure_recheck_delay
         self.get_kv_data = get_kv_data
         self.put_kv_data = put_kv_data
+        self.session_factory = session_factory
         self.subscribers_key = subscribers_key
 
         self._monitor_stop_event = asyncio.Event()
@@ -88,7 +91,7 @@ class SiteMonitorService:
         return True
 
     async def _resolve_site_monitor_url(
-        self, site_key: str, session: aiohttp.ClientSession
+        self, site_key: str, session: ProxyClientSession
     ) -> Optional[str]:
         if site_key == "ssb":
             return await self.url_resolver.resolve_ssb_monitor_url(session)
@@ -99,8 +102,8 @@ class SiteMonitorService:
     async def _check_site_status(
         self,
         site_key: str,
-        session: aiohttp.ClientSession,
-        resolver: Callable[[aiohttp.ClientSession], Awaitable[Optional[str]]],
+        session: ProxyClientSession,
+        resolver: Callable[[ProxyClientSession], Awaitable[Optional[str]]],
     ) -> tuple[bool, str, Optional[str]]:
         state = self._monitor_states[site_key]
         current_url = state.get("real_url")
@@ -155,8 +158,8 @@ class SiteMonitorService:
         is_ok: bool,
         detail: str,
         real_url: Optional[str],
-        session: aiohttp.ClientSession,
-        resolver: Callable[[aiohttp.ClientSession], Awaitable[Optional[str]]],
+        session: ProxyClientSession,
+        resolver: Callable[[ProxyClientSession], Awaitable[Optional[str]]],
     ) -> tuple[bool, str, Optional[str]]:
         if is_ok:
             return is_ok, detail, real_url
@@ -239,7 +242,7 @@ class SiteMonitorService:
         if not has_ssb_subscribers and not has_sxsy_subscribers:
             return
 
-        async with aiohttp.ClientSession() as session:
+        async with self.session_factory() as session:
             if has_ssb_subscribers:
                 ok, detail, real_url = await self._check_site_status(
                     "ssb",
