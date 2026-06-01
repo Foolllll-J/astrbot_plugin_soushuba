@@ -2,6 +2,8 @@ import aiohttp
 import asyncio
 from astrbot.api import logger
 import astrbot.api.message_components as Comp
+from astrbot.core.pipeline.context_utils import call_event_hook
+from astrbot.core.star.star_handler import EventType
 
 from .cache import UserSearchCache, SsbSearchItem, SsbAttachment
 from .http_session import ProxyClientSession
@@ -32,6 +34,24 @@ class SsbFlow:
 
     def _is_url_arg(self, arg: str) -> bool:
         return arg.startswith("http://") or arg.startswith("https://")
+
+    async def _send_chain_with_hooks(self, event, chain: list):
+        previous_result = event.get_result()
+        result = event.chain_result(chain)
+        event.set_result(result)
+        try:
+            if await call_event_hook(event, EventType.OnDecoratingResultEvent):
+                return
+            result = event.get_result()
+            if not result or not result.chain:
+                return
+            await event.send(result.derive(result.chain))
+            await call_event_hook(event, EventType.OnAfterMessageSentEvent)
+        finally:
+            if previous_result is None:
+                event.clear_result()
+            else:
+                event.set_result(previous_result)
 
     async def _handle_search(self, event, keyword: str):
         if not self.search_service.check_ssb_rate_limit(40):
@@ -155,7 +175,7 @@ class SsbFlow:
             Comp.File(name=att.name, file=file_path),
         ]
         try:
-            await event.send(event.chain_result(chain))
+            await self._send_chain_with_hooks(event, chain)
         except Exception as e:
             err = str(e)
             if "rich media transfer failed" in err or "retcode=1200" in err:
