@@ -51,6 +51,9 @@ class SxsyFlow:
             else:
                 event.set_result(previous_result)
 
+    async def _send_plain_immediately(self, event, text: str):
+        await event.send(event.plain_result(text))
+
     async def _exec_sxsy_search(self, keyword: str):
         try:
             async with self.session_factory() as session:
@@ -81,7 +84,7 @@ class SxsyFlow:
             return [event.plain_result("❌ 未解析到附件，可能帖子无附件或 Cookie 已失效。")]
 
         if len(attachments) == 1:
-            results.append(event.plain_result("检测到 1 个附件，开始下载..."))
+            await self._send_plain_immediately(event, "检测到 1 个附件，开始下载...")
             download_results = await self._download_and_send(event, session, attachments[0])
             results.extend(download_results)
             return results
@@ -128,7 +131,9 @@ class SxsyFlow:
     async def _exec_attachment_selection(self, session, event, index, user_id, attachments):
         results = []
         if index == 0:
-            results.append(event.plain_result(f"开始下载全部附件，共 {len(attachments)} 个..."))
+            await self._send_plain_immediately(
+                event, f"开始下载全部附件，共 {len(attachments)} 个..."
+            )
             for att in attachments:
                 download_results = await self._download_and_send(event, session, att)
                 results.extend(download_results)

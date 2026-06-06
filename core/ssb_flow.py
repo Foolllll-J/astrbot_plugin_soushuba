@@ -6,7 +6,7 @@ from astrbot.core.pipeline.context_utils import call_event_hook
 from astrbot.core.star.star_handler import EventType
 
 from .cache import UserSearchCache, SsbSearchItem, SsbAttachment
-from .http_session import ProxyClientSession, ProxyError
+from .http_session import ProxyError
 from .search_service import SearchService
 from .download_service import SsbDownloadService
 
@@ -53,6 +53,9 @@ class SsbFlow:
             else:
                 event.set_result(previous_result)
 
+    async def _send_plain_immediately(self, event, text: str):
+        await event.send(event.plain_result(text))
+
     async def _exec_ssb_search(self, keyword: str):
         """Execute ssb_search with proxy fallback. Returns (ok, message, items)."""
         try:
@@ -97,7 +100,7 @@ class SsbFlow:
             return [event.plain_result("❌ 未解析到附件，可能需要回复或购买附件。")]
 
         if len(attachments) == 1:
-            results.append(event.plain_result("检测到 1 个附件，开始下载..."))
+            await self._send_plain_immediately(event, "检测到 1 个附件，开始下载...")
             download_results = await self._download_and_send(event, session, attachments[0])
             results.extend(download_results)
             return results
@@ -161,7 +164,9 @@ class SsbFlow:
         """Run attachment-selection logic with a given session. Returns list of results."""
         results = []
         if index == 0:
-            results.append(event.plain_result(f"开始下载全部附件，共 {len(attachments)} 个..."))
+            await self._send_plain_immediately(
+                event, f"开始下载全部附件，共 {len(attachments)} 个..."
+            )
             for att in attachments:
                 download_results = await self._download_and_send(event, session, att)
                 results.extend(download_results)
