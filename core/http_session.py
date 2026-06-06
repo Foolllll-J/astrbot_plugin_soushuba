@@ -3,6 +3,28 @@ from collections.abc import Callable
 import aiohttp
 
 
+class ProxyError(Exception):
+    """Raised when the proxy itself is unreachable or returns an error."""
+
+    def __init__(self, message: str, original_exc: BaseException | None = None):
+        super().__init__(message)
+        self.original_exc = original_exc
+
+
+def is_definitely_proxy_error(exc: BaseException) -> bool:
+    return isinstance(
+        exc, (aiohttp.ClientProxyConnectionError, aiohttp.ClientHttpProxyError)
+    )
+
+
+def is_possibly_proxy_error(exc: BaseException) -> bool:
+    return isinstance(exc, aiohttp.ClientConnectionError)
+
+
+def is_proxy_configured(plugin_config: dict | None) -> bool:
+    return bool(str((plugin_config or {}).get("proxy_url", "") or "").strip())
+
+
 class ProxyClientSession:
     """Light wrapper that injects a default proxy into all requests."""
 

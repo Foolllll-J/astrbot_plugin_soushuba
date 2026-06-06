@@ -7,6 +7,11 @@ import aiohttp
 from bs4 import BeautifulSoup
 from astrbot.api import logger
 
+from .http_session import (
+    ProxyError,
+    is_definitely_proxy_error,
+)
+
 
 class UrlResolver:
     def __init__(self, headers: dict, plugin_config: dict, target_domains: List[str]):
@@ -92,6 +97,8 @@ class UrlResolver:
                 return link_url
 
         except Exception as e:
+            if is_definitely_proxy_error(e):
+                raise ProxyError(str(e)) from e
             logger.error(f"访问 {url} 失败: {e}")
         return None
 
@@ -149,6 +156,8 @@ class UrlResolver:
             if fallback_images:
                 return fallback_images[0]
         except Exception as e:
+            if is_definitely_proxy_error(e):
+                raise ProxyError(str(e)) from e
             logger.warning(f"[状态监控] 获取SXSY真实地址失败: {e}")
         return None
 
@@ -240,4 +249,6 @@ class UrlResolver:
         except asyncio.TimeoutError:
             return False, "请求超时", self.normalize_base_url(url)
         except Exception as e:
+            if is_definitely_proxy_error(e):
+                raise ProxyError(str(e)) from e
             return False, str(e), self.normalize_base_url(url)

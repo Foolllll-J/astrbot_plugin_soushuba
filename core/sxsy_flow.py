@@ -6,7 +6,7 @@ from astrbot.core.pipeline.context_utils import call_event_hook
 from astrbot.core.star.star_handler import EventType
 
 from .cache import UserSearchCache, SsbSearchItem, SsbAttachment
-from .http_session import ProxyClientSession
+from .http_session import ProxyError
 from .search_service import SearchService
 from .download_service import SsbDownloadService
 
@@ -51,18 +51,52 @@ class SxsyFlow:
             else:
                 event.set_result(previous_result)
 
+    async def _exec_sxsy_search(self, keyword: str):
+        try:
+            async with self.session_factory() as session:
+                return await self.search_service.sxsy_search(session, keyword)
+        except ProxyError:
+            logger.warning("[SXSY] 代理连接失败，回退直连搜索...")
+            async with aiohttp.ClientSession() as session:
+                return await self.search_service.sxsy_search(session, keyword)
+
     async def _handle_search(self, event, keyword: str):
         yield event.plain_result(f"🔍 正在尚香书苑搜索: {keyword}...")
-        async with self.session_factory() as session:
-            ok, message, items = await self.search_service.sxsy_search(session, keyword)
-            yield event.plain_result(message)
-            if not ok:
-                return
-            user_id = self._get_user_id(event)
-            self.cache.set_search_items(user_id, items)
-            logger.debug(
-                f"[SXSY 缓存] 用户 {user_id} 缓存搜索结果 {len(items)} 条"
+        ok, message, items = await self._exec_sxsy_search(keyword)
+        yield event.plain_result(message)
+        if not ok:
+            return
+        user_id = self._get_user_id(event)
+        self.cache.set_search_items(user_id, items)
+        logger.debug(
+            f"[SXSY 缓存] 用户 {user_id} 缓存搜索结果 {len(items)} 条"
+        )
+
+    async def _exec_post_selection(self, session, event, post, user_id):
+        results = []
+        attachments = await self.download_service.fetch_sxsy_post_attachments(
+            session, post.link
+        )
+        if not attachments:
+            return [event.plain_result("❌ 未解析到附件，可能帖子无附件或 Cookie 已失效。")]
+
+        if len(attachments) == 1:
+            results.append(event.plain_result("检测到 1 个附件，开始下载..."))
+            download_results = await self._download_and_send(event, session, attachments[0])
+            results.extend(download_results)
+            return results
+
+        self.cache.set_pending_attachments(user_id, post, attachments)
+        lines = []
+        for idx, att in enumerate(attachments, 1):
+            lines.append(f"【{idx}】{att.name}")
+        tips = "\n".join(lines)
+        return [
+            event.plain_result(
+                "检测到多个附件，请发送 /sxsy 序号 下载对应文件，"
+                "或 /sxsy 0 下载全部：\n" + tips
             )
+        ]
 
     async def _handle_post_selection(self, event, index: int, post: SsbSearchItem | None = None):
         if not self.search_service.is_download_allowed(
@@ -81,30 +115,34 @@ class SxsyFlow:
                 return
             post = items[index - 1]
 
-        async with self.session_factory() as session:
-            attachments = await self.download_service.fetch_sxsy_post_attachments(
-                session, post.link
-            )
-            if not attachments:
-                yield event.plain_result("❌ 未解析到附件，可能帖子无附件或 Cookie 已失效。")
-                return
+        try:
+            async with self.session_factory() as session:
+                results = await self._exec_post_selection(session, event, post, user_id)
+        except ProxyError:
+            logger.warning("[SXSY] 代理连接失败，回退直连获取帖子信息...")
+            async with aiohttp.ClientSession() as session:
+                results = await self._exec_post_selection(session, event, post, user_id)
+        for result in results:
+            yield result
 
-            if len(attachments) == 1:
-                yield event.plain_result("检测到 1 个附件，开始下载...")
-                results = await self._download_and_send(event, session, attachments[0])
-                for result in results:
-                    yield result
-                return
+    async def _exec_attachment_selection(self, session, event, index, user_id, attachments):
+        results = []
+        if index == 0:
+            results.append(event.plain_result(f"开始下载全部附件，共 {len(attachments)} 个..."))
+            for att in attachments:
+                download_results = await self._download_and_send(event, session, att)
+                results.extend(download_results)
+            self.cache.clear_pending_attachments(user_id)
+            return results
 
-            self.cache.set_pending_attachments(user_id, post, attachments)
-            lines = []
-            for idx, att in enumerate(attachments, 1):
-                lines.append(f"【{idx}】{att.name}")
-            tips = "\n".join(lines)
-            yield event.plain_result(
-                "检测到多个附件，请发送 /sxsy 序号 下载对应文件，"
-                "或 /sxsy 0 下载全部：\n" + tips
-            )
+        if index < 1 or index > len(attachments):
+            return [event.plain_result("附件序号超出范围，请重新选择。")]
+
+        att = attachments[index - 1]
+        download_results = await self._download_and_send(event, session, att)
+        results.extend(download_results)
+        self.cache.clear_pending_attachments(user_id)
+        return results
 
     async def _handle_attachment_selection(self, event, index: int):
         if not self.search_service.is_download_allowed(
@@ -118,28 +156,22 @@ class SxsyFlow:
             yield event.plain_result("当前没有待选择的附件，请先选择帖子。")
             return
 
-        async with self.session_factory() as session:
-            if index == 0:
-                yield event.plain_result(f"开始下载全部附件，共 {len(attachments)} 个...")
-                for att in attachments:
-                    results = await self._download_and_send(event, session, att)
-                    for result in results:
-                        yield result
-                self.cache.clear_pending_attachments(user_id)
-                return
-
-            if index < 1 or index > len(attachments):
-                yield event.plain_result("附件序号超出范围，请重新选择。")
-                return
-
-            att = attachments[index - 1]
-            results = await self._download_and_send(event, session, att)
-            for result in results:
-                yield result
-            self.cache.clear_pending_attachments(user_id)
+        try:
+            async with self.session_factory() as session:
+                results = await self._exec_attachment_selection(
+                    session, event, index, user_id, attachments
+                )
+        except ProxyError:
+            logger.warning("[SXSY] 代理连接失败，回退直连下载附件...")
+            async with aiohttp.ClientSession() as session:
+                results = await self._exec_attachment_selection(
+                    session, event, index, user_id, attachments
+                )
+        for result in results:
+            yield result
 
     async def _download_and_send(
-        self, event, session: ProxyClientSession, att: SsbAttachment
+        self, event, session: aiohttp.ClientSession, att: SsbAttachment
     ) -> list:
         ok, msg, file_path, spent_coin, remain_after = await self.download_service.download_sxsy_attachment(
             session, att, self._get_user_id(event), event.is_admin()

@@ -13,7 +13,7 @@ import astrbot.api.message_components as Comp
 from .core.url_resolver import UrlResolver
 from .core.search_service import SearchService
 from .core.download_service import SsbDownloadService
-from .core.http_session import build_session_factory
+from .core.http_session import build_session_factory, ProxyError
 from .core.ssb_flow import SsbFlow
 from .core.sxsy_flow import SxsyFlow
 from .core.site_monitor import SiteMonitorService
@@ -128,29 +128,38 @@ class SoushuBaLinkExtractorPlugin(Star):
         """获取搜书吧的网址或搜索书籍"""
         args = event.message_str.strip().split(maxsplit=1)
         arg = args[1] if len(args) > 1 else None
-        async for result in self.ssb_flow.handle(event, arg):
-            yield result
+        try:
+            async for result in self.ssb_flow.handle(event, arg):
+                yield result
+        except ProxyError as e:
+            yield event.plain_result(f"代理连接异常，请检查代理配置: {e}")
 
     @filter.command("sxsy", alias={'尚香书苑'})
     async def sxsy_command(self, event: AstrMessageEvent):
         """尚香书苑搜索"""
         args = event.message_str.strip().split(maxsplit=1)
         if len(args) < 2:
-            # SXSY 导航使用图片展示，直接返回导航图。
-            async with self.session_factory() as session:
-                try:
+            try:
+                async with self.session_factory() as session:
                     nav_image_url = await self.url_resolver.extract_sxsy_nav_image_url(
                         session
                     )
-                    if nav_image_url:
-                        chain = [
-                            Comp.Plain("🌸 成功获取尚香书苑最新网址："),
-                            Comp.Image.fromURL(nav_image_url),
-                        ]
-                        yield event.chain_result(chain)
-                        return
-                except Exception as e:
-                    logger.error(f"[获取sxsy导航图] 错误: {e}")
+            except ProxyError:
+                logger.warning("[SXSY] 代理连接失败，回退直连获取导航图...")
+                async with aiohttp.ClientSession() as session:
+                    nav_image_url = await self.url_resolver.extract_sxsy_nav_image_url(
+                        session
+                    )
+            except Exception as e:
+                logger.error(f"[获取sxsy导航图] 错误: {e}")
+                nav_image_url = None
+            if nav_image_url:
+                chain = [
+                    Comp.Plain("🌸 成功获取尚香书苑最新网址："),
+                    Comp.Image.fromURL(nav_image_url),
+                ]
+                yield event.chain_result(chain)
+                return
             yield event.plain_result("❌ 抱歉，尚香书苑导航站目前无法访问或未找到导航图。")
             return
 
@@ -158,6 +167,8 @@ class SoushuBaLinkExtractorPlugin(Star):
         try:
             async for result in self.sxsy_flow.handle(event, arg):
                 yield result
+        except ProxyError as e:
+            yield event.plain_result(f"代理连接异常，请检查代理配置: {e}")
         except Exception as e:
             logger.error(f"sxsy 处理出错: {e}")
             yield event.plain_result(f"❌ 处理过程中发生错误: {str(e)}，请稍后重试。")
@@ -209,47 +220,28 @@ class SoushuBaLinkExtractorPlugin(Star):
         async for result in self._handle_monitor_command(event, "sxsy", "尚香书苑"):
             yield result
 
-    @filter.command("sis", alias={'第一会所'})
-    async def sis_command(self, event: AstrMessageEvent):
-        """获取第一会所的网址"""
-        target_navs = ["http://sis001dz.org/", "http://www.sis001home.com/"]
-        async with self.session_factory() as session:
-            for url in target_navs:
+    async def _find_nav_link(self, session_factory, target_urls, link_regex):
+        """Find nav link from a list of nav URLs using given session factory."""
+        async with session_factory() as session:
+            for url in target_urls:
                 try:
                     async with session.get(url, headers=self.headers, timeout=10) as response:
                         if response.status == 200:
                             text = await self._get_text(response)
                             soup = BeautifulSoup(text, 'lxml')
-                            link_element = soup.find('a', string=re.compile(r'地址一'))
+                            link_element = soup.find('a', string=link_regex)
                             if link_element and link_element.has_attr('href'):
-                                yield event.plain_result(f"🔞 成功找到第一会所最新网址：\n{link_element['href']}")
-                                return
-                except: continue
-        yield event.plain_result("❌ 抱歉，第一会所导航站目前无法访问。")
+                                return link_element['href']
+                except (aiohttp.ClientProxyConnectionError, aiohttp.ClientHttpProxyError):
+                    raise
+                except:
+                    continue
+        return None
 
-    @filter.command("01bz", alias={'第一版主'})
-    async def dybz_command(self, event: AstrMessageEvent):
-        """获取第一版主的网址"""
-        target_navs = ["https://www.龙腾小说.com/", "http://01bz.cc/"]
-        async with self.session_factory() as session:
-            for url in target_navs:
-                try:
-                    async with session.get(url, headers=self.headers, timeout=10) as response:
-                        if response.status == 200:
-                            text = await self._get_text(response)
-                            soup = BeautifulSoup(text, 'lxml')
-                            link_element = soup.find('a', string=re.compile(r'最新线路\s*1'))
-                            if link_element and link_element.has_attr('href'):
-                                yield event.plain_result(f"📚 成功找到第一版主最新网址：\n{link_element['href']}")
-                                return
-                except: continue
-        yield event.plain_result("❌ 抱歉，第一版主导航站目前无法访问。")
-
-    @filter.command("uaa", alias={'有爱爱'})
-    async def uaa_command(self, event: AstrMessageEvent):
-        """获取有爱爱的网址"""
+    async def _find_uaa_link(self, session_factory):
+        """Find uaa link using given session factory."""
         url = "https://uaadizhi.com/"
-        async with self.session_factory() as session:
+        async with session_factory() as session:
             try:
                 async with session.get(url, headers=self.headers, timeout=10) as response:
                     if response.status == 200:
@@ -260,10 +252,53 @@ class SoushuBaLinkExtractorPlugin(Star):
                             if span and '最新' in span.get_text():
                                 a_tag = li.find('a')
                                 if a_tag:
-                                    yield event.plain_result(f"💕 成功找到有爱爱最新网址：\n{a_tag['href']}")
-                                    return
-            except: pass
-        yield event.plain_result("❌ 抱歉，有爱爱导航站目前无法访问。")
+                                    return a_tag['href']
+            except (aiohttp.ClientProxyConnectionError, aiohttp.ClientHttpProxyError):
+                raise
+            except:
+                pass
+        return None
+
+    @filter.command("sis", alias={'第一会所'})
+    async def sis_command(self, event: AstrMessageEvent):
+        """获取第一会所的网址"""
+        target_navs = ["http://sis001dz.org/", "http://www.sis001home.com/"]
+        try:
+            link = await self._find_nav_link(self.session_factory, target_navs, re.compile(r'地址一'))
+        except (aiohttp.ClientProxyConnectionError, aiohttp.ClientHttpProxyError):
+            logger.warning("[SIS] 代理连接失败，回退直连获取网址...")
+            link = await self._find_nav_link(aiohttp.ClientSession, target_navs, re.compile(r'地址一'))
+        if link:
+            yield event.plain_result(f"🔞 成功找到第一会所最新网址：\n{link}")
+        else:
+            yield event.plain_result("❌ 抱歉，第一会所导航站目前无法访问。")
+
+    @filter.command("01bz", alias={'第一版主'})
+    async def dybz_command(self, event: AstrMessageEvent):
+        """获取第一版主的网址"""
+        target_navs = ["https://www.龙腾小说.com/", "http://01bz.cc/"]
+        try:
+            link = await self._find_nav_link(self.session_factory, target_navs, re.compile(r'最新线路\s*1'))
+        except (aiohttp.ClientProxyConnectionError, aiohttp.ClientHttpProxyError):
+            logger.warning("[01BZ] 代理连接失败，回退直连获取网址...")
+            link = await self._find_nav_link(aiohttp.ClientSession, target_navs, re.compile(r'最新线路\s*1'))
+        if link:
+            yield event.plain_result(f"📚 成功找到第一版主最新网址：\n{link}")
+        else:
+            yield event.plain_result("❌ 抱歉，第一版主导航站目前无法访问。")
+
+    @filter.command("uaa", alias={'有爱爱'})
+    async def uaa_command(self, event: AstrMessageEvent):
+        """获取有爱爱的网址"""
+        try:
+            link = await self._find_uaa_link(self.session_factory)
+        except (aiohttp.ClientProxyConnectionError, aiohttp.ClientHttpProxyError):
+            logger.warning("[UAA] 代理连接失败，回退直连获取网址...")
+            link = await self._find_uaa_link(aiohttp.ClientSession)
+        if link:
+            yield event.plain_result(f"💕 成功找到有爱爱最新网址：\n{link}")
+        else:
+            yield event.plain_result("❌ 抱歉，有爱爱导航站目前无法访问。")
 
     async def terminate(self):
         await self.site_monitor.stop()

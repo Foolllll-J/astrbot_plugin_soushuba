@@ -6,7 +6,7 @@ import aiohttp
 from astrbot.api import logger
 from astrbot.api.event import MessageEventResult
 
-from .http_session import ProxyClientSession
+from .http_session import ProxyClientSession, ProxyError
 from .url_resolver import UrlResolver
 
 
@@ -38,6 +38,7 @@ class SiteMonitorService:
             "ssb": {"failed": False, "real_url": None},
             "sxsy": {"failed": False, "real_url": None},
         }
+        self._proxy_issue: Dict[str, bool] = {"ssb": False, "sxsy": False}
 
     def get_subscriber_count(self, site_key: str) -> int:
         return len(self._monitor_subscribers.get(site_key, []))
@@ -99,6 +100,37 @@ class SiteMonitorService:
             return await self.url_resolver.resolve_sxsy_monitor_url(session)
         return None
 
+    async def _probe_with_direct_fallback(
+        self,
+        session: aiohttp.ClientSession,
+        target_url: str,
+        site_key: str,
+    ) -> tuple[bool, str, str]:
+        try:
+            ok, detail, final_url = await self.url_resolver.probe_site_access(
+                session, target_url, site_key
+            )
+            if detail == "请求超时":
+                raise asyncio.TimeoutError
+            return ok, detail, final_url
+        except (ProxyError, asyncio.TimeoutError) as e:
+            self._proxy_issue[site_key] = True
+            if isinstance(e, asyncio.TimeoutError):
+                logger.warning(
+                    f"[状态监控] {site_key} 代理请求超时，回退直连探测…"
+                )
+            else:
+                logger.warning(
+                    f"[状态监控] {site_key} 代理连接失败({e})，回退直连探测…"
+                )
+            async with aiohttp.ClientSession() as direct_session:
+                ok, detail, final_url = await self.url_resolver.probe_site_access(
+                    direct_session, target_url, site_key
+                )
+                if ok:
+                    return True, f"代理异常(已回退直连)，{detail}", final_url
+                return False, f"代理异常，直连也失败: {detail}", final_url
+
     async def _check_site_status(
         self,
         site_key: str,
@@ -108,9 +140,10 @@ class SiteMonitorService:
         state = self._monitor_states[site_key]
         current_url = state.get("real_url")
         last_error = ""
+        self._proxy_issue[site_key] = False
 
         if isinstance(current_url, str) and current_url:
-            ok, detail, final_url = await self.url_resolver.probe_site_access(
+            ok, detail, final_url = await self._probe_with_direct_fallback(
                 session, current_url, site_key
             )
             if ok:
@@ -118,14 +151,23 @@ class SiteMonitorService:
                 return True, detail, final_url
             last_error = f"{final_url} -> {detail}"
 
-        resolved_url = await resolver(session)
+        try:
+            resolved_url = await resolver(session)
+        except ProxyError:
+            self._proxy_issue[site_key] = True
+            logger.warning(
+                f"[状态监控] {site_key} 代理连接失败(地址解析)，回退直连…"
+            )
+            async with aiohttp.ClientSession() as ds:
+                resolved_url = await self._resolve_site_monitor_url(site_key, ds)
+
         if not resolved_url:
             if not current_url:
                 return False, "无法获取真实站点地址", None
             return False, last_error or "访问失败", str(current_url)
 
         if resolved_url != current_url:
-            ok, detail, final_url = await self.url_resolver.probe_site_access(
+            ok, detail, final_url = await self._probe_with_direct_fallback(
                 session, resolved_url, site_key
             )
             if ok:
@@ -208,6 +250,7 @@ class SiteMonitorService:
         was_failed = bool(state.get("failed", False))
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         site_url = str(state.get("real_url") or real_url or "未知")
+        has_proxy_issue = self._proxy_issue.get(site_key, False)
         brief_detail = str(detail or "").strip()
         if "->" in brief_detail:
             brief_detail = brief_detail.split("->", 1)[1].strip()
@@ -223,6 +266,8 @@ class SiteMonitorService:
                     f"站点: {site_url}\n"
                     "状态: 已恢复正常"
                 )
+                if has_proxy_issue:
+                    text += "\n⚠️ 检测环境：当前代理连接异常，已回退直连检测。"
                 await self._send_monitor_notification(site_key, text)
             return
 
@@ -234,6 +279,8 @@ class SiteMonitorService:
                 f"站点: {site_url}\n"
                 f"原因: {brief_detail}"
             )
+            if has_proxy_issue:
+                text += "\n⚠️ 检测环境：代理连接异常，此为回退直连探测结果。"
             await self._send_monitor_notification(site_key, text)
 
     async def _monitor_once(self):

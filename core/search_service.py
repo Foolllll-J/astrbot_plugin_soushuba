@@ -12,6 +12,7 @@ from astrbot.api import logger
 
 from .url_resolver import UrlResolver
 from .cache import SsbSearchItem
+from .http_session import ProxyError
 
 
 class SearchService:
@@ -135,6 +136,8 @@ class SearchService:
                 logger.error(
                     f"[SSB 登录] 登录验证失败。URL: {final_url}, 用户名是否存在: {username in html}"
                 )
+        except ProxyError:
+            raise
         except Exception as e:
             logger.error(f"[SSB 登录] 异常: {e}")
         return False
@@ -160,7 +163,10 @@ class SearchService:
 
         username, password = ssb_auth.split("&", 1)
 
-        base_url = await self.find_ssb_latest_url(session, target_domains)
+        try:
+            base_url = await self.find_ssb_latest_url(session, target_domains)
+        except ProxyError:
+            raise
         if not base_url:
             return False, " 无法获取搜书吧最新网址，请稍后再试。", []
 
@@ -301,6 +307,8 @@ class SearchService:
                 fh_match = re.search(r'name="formhash" value="([a-f0-9]+)"', f_html)
                 if fh_match:
                     formhash = fh_match.group(1)
+        except ProxyError:
+            raise
         except Exception as e:
             logger.error(f"[sxsy] 获取 formhash 异常: {e}")
             return False, "❌ 尚香书苑访问超时或网络错误", []
@@ -313,16 +321,22 @@ class SearchService:
         }
 
         logger.debug(f"[sxsy 搜索] 尝试 POST 搜索: {post_url}")
-        async with session.post(
-            post_url, data=post_data, headers=headers, timeout=15, ssl=False
-        ) as p_resp:
-            if p_resp.status != 200:
-                logger.error(
-                    f"[sxsy 搜索] POST 搜索请求失败: {post_url}, Status: {p_resp.status}"
-                )
-                return False, "❌ 尚香书苑搜索请求失败，请稍后重试", []
-            html = await self.url_resolver.get_text(p_resp)
-            logger.debug(f"[sxsy 搜索] POST 响应 URL: {p_resp.url}, 长度: {len(html)}")
+        try:
+            async with session.post(
+                post_url, data=post_data, headers=headers, timeout=15, ssl=False
+            ) as p_resp:
+                if p_resp.status != 200:
+                    logger.error(
+                        f"[sxsy 搜索] POST 搜索请求失败: {post_url}, Status: {p_resp.status}"
+                    )
+                    return False, "❌ 尚香书苑搜索请求失败，请稍后重试", []
+                html = await self.url_resolver.get_text(p_resp)
+                logger.debug(f"[sxsy 搜索] POST 响应 URL: {p_resp.url}, 长度: {len(html)}")
+        except ProxyError:
+            raise
+        except Exception as e:
+            logger.error(f"[sxsy 搜索] POST 请求异常: {e}")
+            return False, "❌ 尚香书苑搜索请求失败，请稍后重试", []
 
         if (
             '<title>登录 -' in html
