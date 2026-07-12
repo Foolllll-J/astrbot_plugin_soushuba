@@ -38,7 +38,6 @@ class SiteMonitorService:
             "ssb": {"failed": False, "real_url": None},
             "sxsy": {"failed": False, "real_url": None},
         }
-        self._proxy_issue: Dict[str, bool] = {"ssb": False, "sxsy": False}
 
     def get_subscriber_count(self, site_key: str) -> int:
         return len(self._monitor_subscribers.get(site_key, []))
@@ -78,7 +77,9 @@ class SiteMonitorService:
     async def _save_monitor_subscribers(self):
         await self.put_kv_data(self.subscribers_key, self._monitor_subscribers)
 
-    async def set_site_subscription(self, site_key: str, session: str, enable: bool) -> bool:
+    async def set_site_subscription(
+        self, site_key: str, session: str, enable: bool
+    ) -> bool:
         subscribers = self._monitor_subscribers.setdefault(site_key, [])
         if enable:
             if session in subscribers:
@@ -114,11 +115,8 @@ class SiteMonitorService:
                 raise asyncio.TimeoutError
             return ok, detail, final_url
         except (ProxyError, asyncio.TimeoutError) as e:
-            self._proxy_issue[site_key] = True
             if isinstance(e, asyncio.TimeoutError):
-                logger.warning(
-                    f"[状态监控] {site_key} 代理请求超时，回退直连探测…"
-                )
+                logger.warning(f"[状态监控] {site_key} 代理请求超时，回退直连探测…")
             else:
                 logger.warning(
                     f"[状态监控] {site_key} 代理连接失败({e})，回退直连探测…"
@@ -128,8 +126,10 @@ class SiteMonitorService:
                     direct_session, target_url, site_key
                 )
                 if ok:
-                    return True, f"代理异常(已回退直连)，{detail}", final_url
-                return False, f"代理异常，直连也失败: {detail}", final_url
+                    logger.info(f"[状态监控] {site_key} 直连探测成功")
+                    return True, detail, final_url
+                logger.warning(f"[状态监控] {site_key} 直连探测也失败: {detail}")
+                return False, detail, final_url
 
     async def _check_site_status(
         self,
@@ -140,7 +140,6 @@ class SiteMonitorService:
         state = self._monitor_states[site_key]
         current_url = state.get("real_url")
         last_error = ""
-        self._proxy_issue[site_key] = False
 
         if isinstance(current_url, str) and current_url:
             ok, detail, final_url = await self._probe_with_direct_fallback(
@@ -154,12 +153,15 @@ class SiteMonitorService:
         try:
             resolved_url = await resolver(session)
         except ProxyError:
-            self._proxy_issue[site_key] = True
-            logger.warning(
-                f"[状态监控] {site_key} 代理连接失败(地址解析)，回退直连…"
-            )
-            async with aiohttp.ClientSession() as ds:
-                resolved_url = await self._resolve_site_monitor_url(site_key, ds)
+            logger.warning(f"[状态监控] {site_key} 代理连接失败(地址解析)，回退直连…")
+            try:
+                async with aiohttp.ClientSession() as ds:
+                    resolved_url = await self._resolve_site_monitor_url(site_key, ds)
+                if resolved_url:
+                    logger.info(f"[状态监控] {site_key} 直连地址解析成功")
+            except Exception as e:
+                logger.warning(f"[状态监控] {site_key} 直连地址解析也失败: {e}")
+                resolved_url = None
 
         if not resolved_url:
             if not current_url:
@@ -187,7 +189,9 @@ class SiteMonitorService:
             return
         for session in subscribers:
             try:
-                sent = await self.context.send_message(session, MessageEventResult().message(text))
+                sent = await self.context.send_message(
+                    session, MessageEventResult().message(text)
+                )
                 if not sent:
                     logger.warning(f"[状态监控] 发送失败，未找到会话平台: {session}")
             except Exception as e:
@@ -226,7 +230,9 @@ class SiteMonitorService:
             site_key, session, resolver
         )
         if retry_ok:
-            logger.debug(f"[状态监控] {site_name} 首次异常后复检恢复，忽略本次异常告警。")
+            logger.debug(
+                f"[状态监控] {site_name} 首次异常后复检恢复，忽略本次异常告警。"
+            )
             return True, retry_detail, retry_real_url
 
         concise_detail = str(retry_detail or detail or "").strip()
@@ -250,7 +256,6 @@ class SiteMonitorService:
         was_failed = bool(state.get("failed", False))
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         site_url = str(state.get("real_url") or real_url or "未知")
-        has_proxy_issue = self._proxy_issue.get(site_key, False)
         brief_detail = str(detail or "").strip()
         if "->" in brief_detail:
             brief_detail = brief_detail.split("->", 1)[1].strip()
@@ -266,8 +271,6 @@ class SiteMonitorService:
                     f"站点: {site_url}\n"
                     "状态: 已恢复正常"
                 )
-                if has_proxy_issue:
-                    text += "\n⚠️ 检测环境：当前代理连接异常，已回退直连检测。"
                 await self._send_monitor_notification(site_key, text)
             return
 
@@ -279,8 +282,6 @@ class SiteMonitorService:
                 f"站点: {site_url}\n"
                 f"原因: {brief_detail}"
             )
-            if has_proxy_issue:
-                text += "\n⚠️ 检测环境：代理连接异常，此为回退直连探测结果。"
             await self._send_monitor_notification(site_key, text)
 
     async def _monitor_once(self):
@@ -305,7 +306,9 @@ class SiteMonitorService:
                     session,
                     lambda sess: self._resolve_site_monitor_url("ssb", sess),
                 )
-                await self._handle_site_transition("ssb", "搜书吧", ok, detail, real_url)
+                await self._handle_site_transition(
+                    "ssb", "搜书吧", ok, detail, real_url
+                )
 
             if has_sxsy_subscribers:
                 ok, detail, real_url = await self._check_site_status(
@@ -322,7 +325,9 @@ class SiteMonitorService:
                     session,
                     lambda sess: self._resolve_site_monitor_url("sxsy", sess),
                 )
-                await self._handle_site_transition("sxsy", "尚香书苑", ok, detail, real_url)
+                await self._handle_site_transition(
+                    "sxsy", "尚香书苑", ok, detail, real_url
+                )
 
     async def _monitor_loop(self):
         while not self._monitor_stop_event.is_set():

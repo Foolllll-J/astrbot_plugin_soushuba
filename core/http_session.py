@@ -60,7 +60,9 @@ class ProxyClientSession:
         return getattr(self._session, item)
 
 
-def build_session_factory(plugin_config: dict | None) -> Callable[..., ProxyClientSession]:
+def build_session_factory(
+    plugin_config: dict | None,
+) -> Callable[..., ProxyClientSession]:
     proxy_url = str((plugin_config or {}).get("proxy_url", "") or "").strip()
 
     def _factory(*args, **kwargs) -> ProxyClientSession:

@@ -14,9 +14,9 @@ from .http_session import (
 
 
 class UrlResolver:
-    def __init__(self, headers: dict, plugin_config: dict, target_domains: List[str]):
+    def __init__(self, headers: dict, auth_cfg: dict, target_domains: List[str]):
         self.headers = headers
-        self.plugin_config = plugin_config or {}
+        self.auth_cfg = auth_cfg or {}
         self.target_domains = target_domains
 
     def normalize_base_url(self, url: str) -> str:
@@ -26,7 +26,9 @@ class UrlResolver:
         return url
 
     def get_sxsy_search_base_url(self) -> Optional[str]:
-        raw_url = str(self.plugin_config.get("sxsy_url", "") or "").strip()
+        raw_url = str(
+            ((self.auth_cfg.get("sxsy", {}) or {}).get("url", "") or "")
+        ).strip()
         if not raw_url:
             return None
         if not raw_url.startswith(("http://", "https://")):
@@ -149,7 +151,10 @@ class UrlResolver:
                     if image_url not in fallback_images:
                         fallback_images.append(image_url)
                     lowered = image_url.lower()
-                    if any(token in lowered for token in ("logo", "icon", "avatar", "favicon")):
+                    if any(
+                        token in lowered
+                        for token in ("logo", "icon", "avatar", "favicon")
+                    ):
                         continue
                     return image_url
 
@@ -244,8 +249,16 @@ class UrlResolver:
                         content_error = self.check_sxsy_page_health(html_content)
                     if content_error:
                         return False, content_error, self.normalize_base_url(final_url)
-                    return True, f"HTTP {response.status}", self.normalize_base_url(final_url)
-                return False, f"HTTP {response.status}", self.normalize_base_url(final_url)
+                    return (
+                        True,
+                        f"HTTP {response.status}",
+                        self.normalize_base_url(final_url),
+                    )
+                return (
+                    False,
+                    f"HTTP {response.status}",
+                    self.normalize_base_url(final_url),
+                )
         except asyncio.TimeoutError:
             return False, "请求超时", self.normalize_base_url(url)
         except Exception as e:

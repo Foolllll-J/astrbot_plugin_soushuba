@@ -101,7 +101,9 @@ class SsbFlow:
 
         if len(attachments) == 1:
             await self._send_plain_immediately(event, "检测到 1 个附件，开始下载...")
-            download_results = await self._download_and_send(event, session, attachments[0])
+            download_results = await self._download_and_send(
+                event, session, attachments[0]
+            )
             results.extend(download_results)
             return results
 
@@ -129,11 +131,11 @@ class SsbFlow:
             return
         user_id = self._get_user_id(event)
         self.cache.set_search_items(user_id, items)
-        logger.debug(
-            f"[SSB 缓存] 用户 {user_id} 缓存搜索结果 {len(items)} 条"
-        )
+        logger.debug(f"[SSB 缓存] 用户 {user_id} 缓存搜索结果 {len(items)} 条")
 
-    async def _handle_post_selection(self, event, index: int, post: SsbSearchItem | None = None):
+    async def _handle_post_selection(
+        self, event, index: int, post: SsbSearchItem | None = None
+    ):
         if not self.search_service.is_download_allowed(
             self._get_user_id(event), event.is_admin()
         ):
@@ -143,7 +145,9 @@ class SsbFlow:
         if post is None:
             items = self.cache.get_search_items(user_id)
             if not items:
-                yield event.plain_result("未找到可用的搜索结果，请先执行一次 /ssb 关键词 搜索。")
+                yield event.plain_result(
+                    "未找到可用的搜索结果，请先执行一次 /ssb 关键词 搜索。"
+                )
                 return
             if index < 1 or index > len(items):
                 yield event.plain_result("选择序号超出范围，请重新选择。")
@@ -160,7 +164,9 @@ class SsbFlow:
         for result in results:
             yield result
 
-    async def _exec_attachment_selection(self, session, event, index, user_id, attachments):
+    async def _exec_attachment_selection(
+        self, session, event, index, user_id, attachments
+    ):
         """Run attachment-selection logic with a given session. Returns list of results."""
         results = []
         if index == 0:
@@ -211,7 +217,13 @@ class SsbFlow:
     async def _download_and_send(
         self, event, session: aiohttp.ClientSession, att: SsbAttachment
     ) -> list:
-        ok, msg, file_path, spent_coin, remain_after = await self.download_service.download_attachment(
+        (
+            ok,
+            msg,
+            file_path,
+            spent_coin,
+            remain_after,
+        ) = await self.download_service.download_attachment(
             session, att, self._get_user_id(event), event.is_admin()
         )
         if not ok:
@@ -234,9 +246,7 @@ class SsbFlow:
         except Exception as e:
             err = str(e)
             if "rich media transfer failed" in err or "retcode=1200" in err:
-                fallback = (
-                    f"⚠️ {att.name} 文件发送失败，建议自行通过网站下载。"
-                )
+                fallback = f"⚠️ {att.name} 文件发送失败，建议自行通过网站下载。"
                 try:
                     await event.send(event.plain_result(fallback))
                     return []
@@ -258,7 +268,9 @@ class SsbFlow:
             if link_url:
                 yield event.plain_result(f"📖 成功找到搜书吧最新网址：\n{link_url}")
                 return
-            yield event.plain_result("❌ 抱歉，所有导航网站均无法访问或未找到可用链接。")
+            yield event.plain_result(
+                "❌ 抱歉，所有导航网站均无法访问或未找到可用链接。"
+            )
             return
 
         arg = arg.strip()

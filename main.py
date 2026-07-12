@@ -1,6 +1,5 @@
 import aiohttp
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin
 from typing import List, Optional
 import os
 import re
@@ -34,15 +33,19 @@ class SoushuBaLinkExtractorPlugin(Star):
             "https://soushu2035.com",
         ]
         self.plugin_config = config or {}
+        auth_cfg = self.plugin_config.get("auth", {}) or {}
+        monitor_cfg = self.plugin_config.get("monitor", {}) or {}
+        download_cfg = self.plugin_config.get("download", {}) or {}
+
         self.search_result_count = self.plugin_config.get("search_result_count", 10)
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         }
-        self.monitor_check_interval = self.plugin_config.get(
-            "monitor_check_interval", self.DEFAULT_MONITOR_CHECK_INTERVAL
+        self.monitor_check_interval = monitor_cfg.get(
+            "check_interval", self.DEFAULT_MONITOR_CHECK_INTERVAL
         )
-        self.monitor_failure_recheck_delay = self.plugin_config.get(
-            "monitor_failure_recheck_delay",
+        self.monitor_failure_recheck_delay = monitor_cfg.get(
+            "failure_recheck_delay",
             self.DEFAULT_MONITOR_FAILURE_RECHECK_DELAY,
         )
         self.session_factory = build_session_factory(self.plugin_config)
@@ -50,10 +53,10 @@ class SoushuBaLinkExtractorPlugin(Star):
         self.data_dir = StarTools.get_data_dir("astrbot_plugin_soushuba")
         os.makedirs(self.data_dir, exist_ok=True)
         self.ssb_cookie_file = os.path.join(self.data_dir, "ssb_cookies.json")
-        self.url_resolver = UrlResolver(self.headers, self.plugin_config, self.target_domains)
+        self.url_resolver = UrlResolver(self.headers, auth_cfg, self.target_domains)
         self.search_service = SearchService(
             self.headers,
-            self.plugin_config,
+            auth_cfg,
             self.search_result_count,
             self.ssb_cookie_file,
             self.url_resolver,
@@ -66,8 +69,10 @@ class SoushuBaLinkExtractorPlugin(Star):
             self.search_service,
             self.get_kv_data,
             self.put_kv_data,
+            auth_cfg,
+            download_cfg,
         )
-        allow_users = self.plugin_config.get("download_allow_users", ["0"])
+        allow_users = download_cfg.get("allow_users", ["0"])
         self.search_service.set_access_control(allow_users)
         self.ssb_flow = SsbFlow(
             self.search_service,
@@ -116,14 +121,15 @@ class SoushuBaLinkExtractorPlugin(Star):
     ) -> Optional[str]:
         return await self.url_resolver.extract_sxsy_nav_image_url(session, nav_url)
 
-
     async def _get_text(self, response: aiohttp.ClientResponse) -> str:
         return await self.url_resolver.get_text(response)
 
-    async def _extract_link_from_url(self, session: aiohttp.ClientSession, url: str) -> Optional[str]:
+    async def _extract_link_from_url(
+        self, session: aiohttp.ClientSession, url: str
+    ) -> Optional[str]:
         return await self.url_resolver.extract_link_from_url(session, url)
 
-    @filter.command("ssb", alias={'搜书吧'})
+    @filter.command("ssb", alias={"搜书吧"})
     async def ssb_command(self, event: AstrMessageEvent):
         """获取搜书吧的网址或搜索书籍"""
         args = event.message_str.strip().split(maxsplit=1)
@@ -134,7 +140,7 @@ class SoushuBaLinkExtractorPlugin(Star):
         except ProxyError as e:
             yield event.plain_result(f"代理连接异常，请检查代理配置: {e}")
 
-    @filter.command("sxsy", alias={'尚香书苑'})
+    @filter.command("sxsy", alias={"尚香书苑"})
     async def sxsy_command(self, event: AstrMessageEvent):
         """尚香书苑搜索"""
         args = event.message_str.strip().split(maxsplit=1)
@@ -160,7 +166,9 @@ class SoushuBaLinkExtractorPlugin(Star):
                 ]
                 yield event.chain_result(chain)
                 return
-            yield event.plain_result("❌ 抱歉，尚香书苑导航站目前无法访问或未找到导航图。")
+            yield event.plain_result(
+                "❌ 抱歉，尚香书苑导航站目前无法访问或未找到导航图。"
+            )
             return
 
         arg = args[1].strip()
@@ -186,7 +194,9 @@ class SoushuBaLinkExtractorPlugin(Star):
         enable = action_lower not in disable_actions and action not in disable_actions
         session = event.unified_msg_origin
 
-        changed = await self.site_monitor.set_site_subscription(site_key, session, enable)
+        changed = await self.site_monitor.set_site_subscription(
+            site_key, session, enable
+        )
         if enable:
             if changed:
                 logger.debug(
@@ -225,16 +235,21 @@ class SoushuBaLinkExtractorPlugin(Star):
         async with session_factory() as session:
             for url in target_urls:
                 try:
-                    async with session.get(url, headers=self.headers, timeout=10) as response:
+                    async with session.get(
+                        url, headers=self.headers, timeout=10
+                    ) as response:
                         if response.status == 200:
                             text = await self._get_text(response)
-                            soup = BeautifulSoup(text, 'lxml')
-                            link_element = soup.find('a', string=link_regex)
-                            if link_element and link_element.has_attr('href'):
-                                return link_element['href']
-                except (aiohttp.ClientProxyConnectionError, aiohttp.ClientHttpProxyError):
+                            soup = BeautifulSoup(text, "lxml")
+                            link_element = soup.find("a", string=link_regex)
+                            if link_element and link_element.has_attr("href"):
+                                return link_element["href"]
+                except (
+                    aiohttp.ClientProxyConnectionError,
+                    aiohttp.ClientHttpProxyError,
+                ):
                     raise
-                except:
+                except Exception:
                     continue
         return None
 
@@ -243,51 +258,61 @@ class SoushuBaLinkExtractorPlugin(Star):
         url = "https://uaadizhi.com/"
         async with session_factory() as session:
             try:
-                async with session.get(url, headers=self.headers, timeout=10) as response:
+                async with session.get(
+                    url, headers=self.headers, timeout=10
+                ) as response:
                     if response.status == 200:
                         text = await self._get_text(response)
-                        soup = BeautifulSoup(text, 'lxml')
-                        for li in soup.find_all('li'):
-                            span = li.find('span')
-                            if span and '最新' in span.get_text():
-                                a_tag = li.find('a')
+                        soup = BeautifulSoup(text, "lxml")
+                        for li in soup.find_all("li"):
+                            span = li.find("span")
+                            if span and "最新" in span.get_text():
+                                a_tag = li.find("a")
                                 if a_tag:
-                                    return a_tag['href']
+                                    return a_tag["href"]
             except (aiohttp.ClientProxyConnectionError, aiohttp.ClientHttpProxyError):
                 raise
-            except:
+            except Exception:
                 pass
         return None
 
-    @filter.command("sis", alias={'第一会所'})
+    @filter.command("sis", alias={"第一会所"})
     async def sis_command(self, event: AstrMessageEvent):
         """获取第一会所的网址"""
         target_navs = ["http://sis001dz.org/", "http://www.sis001home.com/"]
         try:
-            link = await self._find_nav_link(self.session_factory, target_navs, re.compile(r'地址一'))
+            link = await self._find_nav_link(
+                self.session_factory, target_navs, re.compile(r"地址一")
+            )
         except (aiohttp.ClientProxyConnectionError, aiohttp.ClientHttpProxyError):
             logger.warning("[SIS] 代理连接失败，回退直连获取网址...")
-            link = await self._find_nav_link(aiohttp.ClientSession, target_navs, re.compile(r'地址一'))
+            link = await self._find_nav_link(
+                aiohttp.ClientSession, target_navs, re.compile(r"地址一")
+            )
         if link:
             yield event.plain_result(f"🔞 成功找到第一会所最新网址：\n{link}")
         else:
             yield event.plain_result("❌ 抱歉，第一会所导航站目前无法访问。")
 
-    @filter.command("01bz", alias={'第一版主'})
+    @filter.command("01bz", alias={"第一版主"})
     async def dybz_command(self, event: AstrMessageEvent):
         """获取第一版主的网址"""
         target_navs = ["https://www.龙腾小说.com/", "http://01bz.cc/"]
         try:
-            link = await self._find_nav_link(self.session_factory, target_navs, re.compile(r'最新线路\s*1'))
+            link = await self._find_nav_link(
+                self.session_factory, target_navs, re.compile(r"最新线路\s*1")
+            )
         except (aiohttp.ClientProxyConnectionError, aiohttp.ClientHttpProxyError):
             logger.warning("[01BZ] 代理连接失败，回退直连获取网址...")
-            link = await self._find_nav_link(aiohttp.ClientSession, target_navs, re.compile(r'最新线路\s*1'))
+            link = await self._find_nav_link(
+                aiohttp.ClientSession, target_navs, re.compile(r"最新线路\s*1")
+            )
         if link:
             yield event.plain_result(f"📚 成功找到第一版主最新网址：\n{link}")
         else:
             yield event.plain_result("❌ 抱歉，第一版主导航站目前无法访问。")
 
-    @filter.command("uaa", alias={'有爱爱'})
+    @filter.command("uaa", alias={"有爱爱"})
     async def uaa_command(self, event: AstrMessageEvent):
         """获取有爱爱的网址"""
         try:

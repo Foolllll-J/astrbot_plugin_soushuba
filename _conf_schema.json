@@ -1,26 +1,95 @@
 {
-    "ssb_auth": {
-        "description": "搜书吧账密",
-        "type": "string",
-        "hint": "用于登录和搜索，格式：账号&密码",
-        "default": ""
+    "auth": {
+        "description": "站点登录凭证",
+        "hint": "配置站点的账号密码和访问地址与 Cookie，用于登录鉴权和搜索下载。",
+        "type": "object",
+        "items": {
+            "ssb": {
+                "description": "搜书吧账号密码",
+                "type": "string",
+                "hint": "格式：账号&密码。用于登录搜书吧执行搜索和下载。",
+                "default": ""
+            },
+            "sxsy": {
+                "description": "尚香书苑登录配置",
+                "type": "object",
+                "items": {
+                    "url": {
+                        "description": "网站地址",
+                        "type": "string",
+                        "hint": "填写站点可用域名，用于搜索和状态监控。",
+                        "default": ""
+                    },
+                    "cookie": {
+                        "description": "Cookie",
+                        "type": "string",
+                        "hint": "从浏览器复制 Cookie 字段并填入，用于搜索鉴权。",
+                        "default": ""
+                    }
+                }
+            }
+        }
     },
-    "sxsy_url": {
-        "description": "尚香书苑网址",
-        "type": "string",
-        "hint": "用于尚香书苑搜索与监控",
-        "default": ""
+    "monitor": {
+        "description": "站点状态监控",
+        "hint": "配置站点的可用性检测频率和异常处理策略。",
+        "type": "object",
+        "items": {
+            "check_interval": {
+                "description": "检测间隔（秒）",
+                "type": "int",
+                "hint": "每隔多少秒检测一次站点可用性。不建议低于 60 秒，避免请求过于频繁。",
+                "slider": {
+                    "min": 60,
+                    "max": 86400,
+                    "step": 60
+                },
+                "default": 3600
+            },
+            "failure_recheck_delay": {
+                "description": "异常复检延迟（秒）",
+                "type": "int",
+                "hint": "检测到站点异常后，延迟这么多秒再复核一次确认是否为真实异常。设为 0 表示不复核，直接判定为异常。",
+                "slider": {
+                    "min": 0,
+                    "max": 3600,
+                    "step": 60
+                },
+                "default": 300
+            }
+        }
     },
-    "sxsy_cookie": {
-        "description": "尚香书苑 Cookie",
-        "type": "string",
-        "hint": "用于搜索，可以从浏览器获取",
-        "default": ""
+    "download": {
+        "description": "下载功能控制",
+        "hint": "管理允许下载的用户范围、每日金币消耗上限。留空或设为 0 表示不限制。",
+        "type": "object",
+        "items": {
+            "allow_users": {
+                "description": "允许下载的用户 ID",
+                "type": "list",
+                "hint": "填写用户 ID 列表。默认填写 \"0\" 表示仅管理员可用；留空则所有用户均可下载。",
+                "default": [
+                    "0"
+                ]
+            },
+            "daily_user_coin_limit": {
+                "description": "单用户每日金币上限",
+                "type": "int",
+                "hint": "每个用户每天最多消耗多少金币用于下载。0 表示不限制。",
+                "default": 0
+            },
+            "daily_total_coin_limit": {
+                "description": "全局每日金币上限",
+                "type": "int",
+                "hint": "所有用户加起来每天最多消耗多少金币。0 表示不限制。",
+                "default": 0
+            }
+        }
     },
     "search_result_count": {
         "description": "搜索结果数量",
-        "hint": "设置每次搜索返回的结果数量",
         "type": "int",
+        "hint": "每次搜索最多返回多少条结果。",
         "slider": {
             "min": 5,
             "max": 20,
@@ -28,52 +97,10 @@
         },
         "default": 10
     },
-    "monitor_check_interval": {
-        "description": "网站状态监控检测间隔(秒)",
-        "hint": "仅在有订阅会话时执行检测",
-        "type": "int",
-        "slider": {
-            "min": 10,
-            "max": 86400,
-            "step": 10
-        },
-        "default": 3600
-    },
-    "monitor_failure_recheck_delay": {
-        "description": "网站异常复核间隔(秒)",
-        "hint": "检测到异常后，延迟多久再复核一次；设置为 0 表示不复核",
-        "type": "int",
-        "slider": {
-            "min": 0,
-            "max": 3600,
-            "step": 1
-        },
-        "default": 300
-    },
-    "download_allow_users": {
-        "description": "允许下载用户",
-        "hint": "允许使用下载功能的用户 ID 列表。默认 0 表示仅管理员可用；留空表示所有人可用。",
-        "type": "list",
-        "default": [
-            "0"
-        ]
-    },
-    "daily_user_coin_limit": {
-        "description": "单用户每日金币上限",
-        "hint": "0 表示不限制",
-        "type": "int",
-        "default": 0
-    },
-    "daily_total_coin_limit": {
-        "description": "全局每日金币上限",
-        "hint": "0 表示不限制",
-        "type": "int",
-        "default": 0
-    },
     "proxy_url": {
-        "description": "代理地址",
+        "description": "代理服务器地址",
         "type": "string",
-        "hint": "留空则直连；填写后插件全部外部访问都将走该代理，例如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080",
+        "hint": "留空表示直连。支持 HTTP/HTTPS/SOCKS5 代理，例如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080。配置后插件全部外部请求都将走此代理。",
         "default": ""
     }
 }

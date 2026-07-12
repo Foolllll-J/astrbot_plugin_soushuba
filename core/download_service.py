@@ -28,11 +28,15 @@ class SsbDownloadService:
         search_service: SearchService,
         get_kv_data=None,
         put_kv_data=None,
+        auth_cfg: dict | None = None,
+        download_cfg: dict | None = None,
     ):
         self.headers = headers
         self.data_dir = data_dir
         self.url_resolver = url_resolver
         self.search_service = search_service
+        self.auth_cfg = auth_cfg or {}
+        self.download_cfg = download_cfg or {}
         self.download_dir = os.path.join(self.data_dir, "downloads", "ssb")
         os.makedirs(self.download_dir, exist_ok=True)
         self.cleanup_delay = 300
@@ -46,14 +50,14 @@ class SsbDownloadService:
         return name or "attachment"
 
     def _get_user_coin_limit(self) -> int:
-        raw = self.search_service.plugin_config.get("daily_user_coin_limit", 0)
+        raw = self.download_cfg.get("daily_user_coin_limit", 0)
         try:
             return max(int(raw), 0)
         except (TypeError, ValueError):
             return 0
 
     def _get_total_coin_limit(self) -> int:
-        raw = self.search_service.plugin_config.get("daily_total_coin_limit", 0)
+        raw = self.download_cfg.get("daily_total_coin_limit", 0)
         try:
             return max(int(raw), 0)
         except (TypeError, ValueError):
@@ -113,10 +117,18 @@ class SsbDownloadService:
 
         if user_limit > 0 and user_spent + cost > user_limit:
             remain = max(user_limit - user_spent, 0)
-            return False, f"今日个人金币额度不足（本次需 {cost}，剩余 {remain}）", remain
+            return (
+                False,
+                f"今日个人金币额度不足（本次需 {cost}，剩余 {remain}）",
+                remain,
+            )
         if total_limit > 0 and total_spent + cost > total_limit:
             total_remain = max(total_limit - total_spent, 0)
-            return False, f"今日全局金币额度不足（本次需 {cost}，剩余 {total_remain}）", None
+            return (
+                False,
+                f"今日全局金币额度不足（本次需 {cost}，剩余 {total_remain}）",
+                None,
+            )
 
         usage["users"][str(user_id)] = user_spent + cost
         usage["total"] = total_spent + cost
@@ -163,8 +175,12 @@ class SsbDownloadService:
                 cookies[key] = val
         return cookies
 
-    def _ensure_sxsy_session_cookies(self, session: aiohttp.ClientSession, base_url: str) -> None:
-        cookie = str(self.search_service.plugin_config.get("sxsy_cookie", "") or "").strip()
+    def _ensure_sxsy_session_cookies(
+        self, session: aiohttp.ClientSession, base_url: str
+    ) -> None:
+        cookie = str(
+            ((self.auth_cfg.get("sxsy", {}) or {}).get("cookie", "") or "")
+        ).strip()
         if not cookie:
             return
         jar_data = self._parse_cookie_string(cookie)
@@ -185,7 +201,11 @@ class SsbDownloadService:
             return raw_html
         decoded = unquote("".join(tokens))
         d_lower = decoded.lower()
-        if "<html" in d_lower or "forum.php?mod=attachment" in d_lower or "action=attachpay" in d_lower:
+        if (
+            "<html" in d_lower
+            or "forum.php?mod=attachment" in d_lower
+            or "action=attachpay" in d_lower
+        ):
             return decoded
         return raw_html
 
@@ -300,7 +320,9 @@ console.log(JSON.stringify(captured));
             return None
 
     def _extract_sxsy_dsign_from_shell_script(self, raw_html: str) -> Optional[str]:
-        def extract_balanced_call_arg(text: str, open_paren_index: int) -> Optional[str]:
+        def extract_balanced_call_arg(
+            text: str, open_paren_index: int
+        ) -> Optional[str]:
             if open_paren_index < 0 or open_paren_index >= len(text):
                 return None
             if text[open_paren_index] != "(":
@@ -674,9 +696,7 @@ console.log(JSON.stringify(captured));
         logger.debug("[SSB 下载] 解析到附件数: 0")
         return []
 
-    def _parse_attachments(
-        self, html: str, final_url: str
-    ) -> List[SsbAttachment]:
+    def _parse_attachments(self, html: str, final_url: str) -> List[SsbAttachment]:
         soup = BeautifulSoup(html, "lxml")
         attachments: List[SsbAttachment] = []
 
@@ -686,6 +706,7 @@ console.log(JSON.stringify(captured));
                 return (has_extension, len(value))
 
             return candidate if _score(candidate) > _score(current) else current
+
         ignore_texts = {"购买", "[购买]", "记录", "[记录]"}
 
         for a in soup.find_all("a", href=True):
@@ -746,7 +767,9 @@ console.log(JSON.stringify(captured));
             return match.group(1)
         return None
 
-    def _parse_succeedhandle_register(self, text: str) -> tuple[Optional[str], Optional[str]]:
+    def _parse_succeedhandle_register(
+        self, text: str
+    ) -> tuple[Optional[str], Optional[str]]:
         """
         解析 inajax=1 的 XML/CDATA 响应，提取跳转 URL 与提示文案。
         返回 (url, message)；无法解析则返回 (None, None)
@@ -825,9 +848,7 @@ console.log(JSON.stringify(captured));
             final_url = str(resp.url)
         return html, final_url
 
-    def _parse_sxsy_attachments(
-        self, html: str, final_url: str
-    ) -> List[SsbAttachment]:
+    def _parse_sxsy_attachments(self, html: str, final_url: str) -> List[SsbAttachment]:
         soup = BeautifulSoup(html, "lxml")
         attachments: List[SsbAttachment] = []
         ignore_texts = {"购买", "[购买]", "记录", "[记录]"}
@@ -848,11 +869,15 @@ console.log(JSON.stringify(captured));
                 onclick_url = onclick_match.group(1).strip()
 
             link_ref = href
-            if (not link_ref or link_ref.startswith(("javascript:", "#"))) and onclick_url:
+            if (
+                not link_ref or link_ref.startswith(("javascript:", "#"))
+            ) and onclick_url:
                 link_ref = onclick_url
 
             is_pay_link = "mod=misc" in link_ref and "action=attachpay" in link_ref
-            is_download_link = "mod=attachment" in link_ref or "attachment.php" in link_ref
+            is_download_link = (
+                "mod=attachment" in link_ref or "attachment.php" in link_ref
+            )
             if not is_pay_link and not is_download_link:
                 continue
 
@@ -984,7 +1009,9 @@ console.log(JSON.stringify(captured));
                         f"len={len(jump_url)}, has_dsign={'_dsign=' in jump_url}, "
                         f"prefix={jump_url[:120]}"
                     )
-                    dsign = self._extract_sxsy_dsign(jump_url) or self._extract_sxsy_dsign(unquote(jump_url))
+                    dsign = self._extract_sxsy_dsign(
+                        jump_url
+                    ) or self._extract_sxsy_dsign(unquote(jump_url))
                     if dsign:
                         dsign_method = "node_eval"
 
@@ -1018,7 +1045,7 @@ console.log(JSON.stringify(captured));
             lowered = html.lower()
             login_like = (
                 "member.php?mod=logging&action=login" in lowered
-                or "class=\"pg_logging\"" in lowered
+                or 'class="pg_logging"' in lowered
                 or "登录 -" in html
             )
             challenge_like = (
@@ -1086,18 +1113,16 @@ console.log(JSON.stringify(captured));
             return False, msg_text or "预取购买信息失败", None, 0, None
 
         info = self._parse_attachpay_info(pre_html)
-        price = (
-            info.get("售价(金钱)")
-            or info.get("售价(银币)")
-            or info.get("售价")
-        )
+        price = info.get("售价(金钱)") or info.get("售价(银币)") or info.get("售价")
         balance = (
             info.get("购买后余额(金钱)")
             or info.get("购买后余额(银币)")
             or info.get("购买后余额")
         )
         if price or balance:
-            logger.debug(f"[SXSY 下载] 购买信息: 售价={price or '-'} 余额={balance or '-'}")
+            logger.debug(
+                f"[SXSY 下载] 购买信息: 售价={price or '-'} 余额={balance or '-'}"
+            )
         coin_cost = self._parse_coin_value(price)
         ok_budget, budget_msg, remain_after = await self._consume_coin_budget(
             user_id=user_id,
@@ -1164,7 +1189,11 @@ console.log(JSON.stringify(captured));
         post_url = attachment.post_url or attachment.url
         base_url = self.url_resolver.normalize_base_url(post_url)
         self._ensure_sxsy_session_cookies(session, base_url)
-        download_url = attachment.download_url if _is_real_download_url(attachment.download_url) else None
+        download_url = (
+            attachment.download_url
+            if _is_real_download_url(attachment.download_url)
+            else None
+        )
         sxsy_headers = self._get_sxsy_headers(referer=post_url)
         spent_coin = 0
         remain_after = None
@@ -1195,15 +1224,27 @@ console.log(JSON.stringify(captured));
             if not download_url:
                 parsed_attachments = self._parse_sxsy_attachments(html, final_url)
                 for item in parsed_attachments:
-                    if attachment.aid and item.aid == attachment.aid and item.download_url:
-                        download_url = item.download_url if _is_real_download_url(item.download_url) else None
+                    if (
+                        attachment.aid
+                        and item.aid == attachment.aid
+                        and item.download_url
+                    ):
+                        download_url = (
+                            item.download_url
+                            if _is_real_download_url(item.download_url)
+                            else None
+                        )
                         logger.debug(
                             "[SXSY 下载] 附件列表匹配(aid): "
                             f"candidate={item.download_url}, accepted={bool(download_url)}"
                         )
                         break
                     if item.name == attachment.name and item.download_url:
-                        download_url = item.download_url if _is_real_download_url(item.download_url) else None
+                        download_url = (
+                            item.download_url
+                            if _is_real_download_url(item.download_url)
+                            else None
+                        )
                         logger.debug(
                             "[SXSY 下载] 附件列表匹配(name): "
                             f"candidate={item.download_url}, accepted={bool(download_url)}"
@@ -1211,8 +1252,16 @@ console.log(JSON.stringify(captured));
                         break
 
         if attachment.pay_url and attachment.aid and not download_url:
-            logger.debug(f"[SXSY 下载] 检测到需购买附件: aid={attachment.aid}, tid_from_url={self._extract_tid_from_url(post_url) or '-'}")
-            ok, msg, direct_url, spent_coin, remain_after = await self.purchase_sxsy_attachment(
+            logger.debug(
+                f"[SXSY 下载] 检测到需购买附件: aid={attachment.aid}, tid_from_url={self._extract_tid_from_url(post_url) or '-'}"
+            )
+            (
+                ok,
+                msg,
+                direct_url,
+                spent_coin,
+                remain_after,
+            ) = await self.purchase_sxsy_attachment(
                 session, post_url, attachment.aid, html, user_id, is_admin
             )
             if not ok:
@@ -1252,12 +1301,24 @@ console.log(JSON.stringify(captured));
             allow_redirects=True,
         ) as resp:
             if resp.status >= 400:
-                return False, f"下载失败 HTTP {resp.status}", None, spent_coin, remain_after
+                return (
+                    False,
+                    f"下载失败 HTTP {resp.status}",
+                    None,
+                    spent_coin,
+                    remain_after,
+                )
             content_type = resp.headers.get("Content-Type", "")
             if "text/html" in content_type or "text/xml" in content_type:
                 text = await self.url_resolver.get_text(resp)
                 msg_text = self._extract_inajax_message(text)
-                return False, msg_text or "返回文本页面，可能购买失败或 Cookie 失效", None, spent_coin, remain_after
+                return (
+                    False,
+                    msg_text or "返回文本页面，可能购买失败或 Cookie 失效",
+                    None,
+                    spent_coin,
+                    remain_after,
+                )
 
             with open(file_path, "wb") as f:
                 async for chunk in resp.content.iter_chunked(1024 * 64):
@@ -1265,7 +1326,11 @@ console.log(JSON.stringify(captured));
 
         if os.path.exists(file_path):
             logger.debug(f"[SXSY 下载] 下载完成: {file_path}")
-            if remain_after is None and (not is_admin) and self._get_user_coin_limit() > 0:
+            if (
+                remain_after is None
+                and (not is_admin)
+                and self._get_user_coin_limit() > 0
+            ):
                 usage = await self._load_coin_usage()
                 user_spent = int(usage["users"].get(str(user_id), 0))
                 remain_after = max(self._get_user_coin_limit() - user_spent, 0)
@@ -1288,7 +1353,11 @@ console.log(JSON.stringify(captured));
         try:
             async with session.get(
                 check_url,
-                headers={**self.headers, "Referer": post_url, "X-Requested-With": "XMLHttpRequest"},
+                headers={
+                    **self.headers,
+                    "Referer": post_url,
+                    "X-Requested-With": "XMLHttpRequest",
+                },
                 timeout=15,
                 ssl=False,
             ) as resp:
@@ -1362,7 +1431,11 @@ console.log(JSON.stringify(captured));
         logger.debug(f"[SSB 下载] 预取购买弹窗: aid={aid}, tid={tid}")
         async with session.get(
             pre_url,
-            headers={**self.headers, "Referer": post_url, "X-Requested-With": "XMLHttpRequest"},
+            headers={
+                **self.headers,
+                "Referer": post_url,
+                "X-Requested-With": "XMLHttpRequest",
+            },
             timeout=20,
             ssl=False,
         ) as resp:
@@ -1374,18 +1447,16 @@ console.log(JSON.stringify(captured));
             return False, msg_text or "预取购买信息失败", None, 0, None
 
         info = self._parse_attachpay_info(pre_html)
-        price = (
-            info.get("售价(银币)")
-            or info.get("售价(金钱)")
-            or info.get("售价")
-        )
+        price = info.get("售价(银币)") or info.get("售价(金钱)") or info.get("售价")
         balance = (
             info.get("购买后余额(银币)")
             or info.get("购买后余额(金钱)")
             or info.get("购买后余额")
         )
         if price or balance:
-            logger.debug(f"[SSB 下载] 购买信息: 售价={price or '-'} 余额={balance or '-'}")
+            logger.debug(
+                f"[SSB 下载] 购买信息: 售价={price or '-'} 余额={balance or '-'}"
+            )
         coin_cost = self._parse_coin_value(price)
         ok_budget, budget_msg, remain_after = await self._consume_coin_budget(
             user_id=user_id,
@@ -1433,7 +1504,9 @@ console.log(JSON.stringify(captured));
             logger.warning(f"[SSB 下载] 购买响应未识别: {preview}")
             return False, msg_text or "购买失败", None, 0, remain_after
 
-    def _extract_download_url(self, html: str, post_url: str, aid: Optional[str]) -> Optional[str]:
+    def _extract_download_url(
+        self, html: str, post_url: str, aid: Optional[str]
+    ) -> Optional[str]:
         if not aid:
             return None
         soup = BeautifulSoup(html, "lxml")
@@ -1456,7 +1529,7 @@ console.log(JSON.stringify(captured));
     async def ensure_login(
         self, session: aiohttp.ClientSession, base_url: str
     ) -> tuple[bool, str]:
-        ssb_auth = self.search_service.plugin_config.get("ssb_auth", "")
+        ssb_auth = self.auth_cfg.get("ssb", "")
         if not ssb_auth or "&" not in ssb_auth:
             return False, "请先在插件配置中设置 ssb_auth (格式: 账号&密码)。"
 
@@ -1520,7 +1593,13 @@ console.log(JSON.stringify(captured));
 
         if attachment.pay_url and attachment.aid and html:
             logger.debug(f"[SSB 下载] 附件可能需要购买: aid={attachment.aid}")
-            ok, msg, direct_url, spent_coin, remain_after = await self.purchase_attachment(
+            (
+                ok,
+                msg,
+                direct_url,
+                spent_coin,
+                remain_after,
+            ) = await self.purchase_attachment(
                 session, post_url, attachment.aid, html, user_id, is_admin
             )
             if not ok:
@@ -1539,15 +1618,28 @@ console.log(JSON.stringify(captured));
         logger.debug(f"[SSB 下载] 开始下载: {download_url} -> {file_path}")
 
         async with session.get(
-            download_url, headers={**self.headers, "Referer": post_url}, timeout=30, ssl=False
+            download_url,
+            headers={**self.headers, "Referer": post_url},
+            timeout=30,
+            ssl=False,
         ) as resp:
             if resp.status >= 400:
-                return False, f"下载失败 HTTP {resp.status}", None, spent_coin, remain_after
+                return (
+                    False,
+                    f"下载失败 HTTP {resp.status}",
+                    None,
+                    spent_coin,
+                    remain_after,
+                )
             content_type = resp.headers.get("Content-Type", "")
             if "text/html" in content_type:
                 html = await self.url_resolver.get_text(resp)
                 hints = self._detect_gated_content(html)
-                hint_msg = "; ".join(hints) if hints else "返回HTML页面，可能需要回复或购买附件"
+                hint_msg = (
+                    "; ".join(hints)
+                    if hints
+                    else "返回HTML页面，可能需要回复或购买附件"
+                )
                 return False, hint_msg, None, spent_coin, remain_after
 
             with open(file_path, "wb") as f:
@@ -1556,7 +1648,11 @@ console.log(JSON.stringify(captured));
 
         if os.path.exists(file_path):
             logger.debug(f"[SSB 下载] 下载完成: {file_path}")
-            if remain_after is None and (not is_admin) and self._get_user_coin_limit() > 0:
+            if (
+                remain_after is None
+                and (not is_admin)
+                and self._get_user_coin_limit() > 0
+            ):
                 usage = await self._load_coin_usage()
                 user_spent = int(usage["users"].get(str(user_id), 0))
                 remain_after = max(self._get_user_coin_limit() - user_spent, 0)

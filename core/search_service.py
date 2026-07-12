@@ -25,13 +25,13 @@ class SearchService:
     def __init__(
         self,
         headers: dict,
-        plugin_config: dict,
+        auth_cfg: dict,
         search_result_count: int,
         ssb_cookie_file: str,
         url_resolver: UrlResolver,
     ):
         self.headers = headers
-        self.plugin_config = plugin_config or {}
+        self.auth_cfg = auth_cfg or {}
         self.search_result_count = search_result_count
         self.ssb_cookie_file = ssb_cookie_file
         self.url_resolver = url_resolver
@@ -107,10 +107,10 @@ class SearchService:
         final_lower = final_url.lower()
         return (
             "member.php?mod=logging&action=login" in final_lower
-            or '<title>登录 -' in html
+            or "<title>登录 -" in html
             or 'class="pg_logging"' in lowered
-            or "name=\"loginfield\"" in lowered
-            or "id=\"lsform\"" in lowered
+            or 'name="loginfield"' in lowered
+            or 'id="lsform"' in lowered
         )
 
     def _get_ssb_login_failure_message(
@@ -135,10 +135,18 @@ class SearchService:
             return "搜书吧登录失败，站点可能触发了验证码或风控校验，请稍后重试。"
         if reason == "login_failed_still_on_login":
             title_hint = f"当前页面标题：{title}。" if title else ""
-            return "搜书吧登录未通过，站点仍停留在登录页，可能是临时风控、Cookie 状态异常或账密错误。" + title_hint
+            return (
+                "搜书吧登录未通过，站点仍停留在登录页，可能是临时风控、Cookie 状态异常或账密错误。"
+                + title_hint
+            )
         if reason == "login_failed_unexpected_page":
             where = f" 返回地址：{final_url}。" if final_url else ""
-            return "搜书吧登录后返回了异常页面，暂时无法确认是否为账密问题，请稍后重试。" + where
+            return (
+                "搜书吧登录后返回了异常页面，暂时无法确认是否为账密问题，请稍后重试。"
+                + where
+            )
+        if reason == "login_connection_error":
+            return "搜书吧网站当前无法访问，无法执行登录操作。"
         return "搜书吧登录失败，原因未明，请稍后重试。"
 
     def _classify_ssb_login_verification_failure(
@@ -149,7 +157,10 @@ class SearchService:
     ) -> tuple[str, str]:
         lowered = html.lower()
         title = self._extract_page_title(html)
-        if any(token in html for token in ("密码错误", "登录失败", "帐号或密码错误", "账号或密码错误")):
+        if any(
+            token in html
+            for token in ("密码错误", "登录失败", "帐号或密码错误", "账号或密码错误")
+        ):
             return (
                 "login_failed_bad_credentials",
                 self._get_ssb_login_failure_message(
@@ -187,9 +198,7 @@ class SearchService:
     def _get_search_result_download_tip(self, command: str) -> str:
         allow_users = self._allow_users
         is_admin_only = "0" in allow_users
-        tip = (
-            f"⬇️ 可继续发送 /{command} 序号 下载对应附件。"
-        )
+        tip = f"⬇️ 可继续发送 /{command} 序号 下载对应附件。"
         if is_admin_only:
             tip += " 当前下载功能仅管理员可用。"
         return tip
@@ -205,10 +214,10 @@ class SearchService:
         final_lower = final_url.lower()
         return (
             "member.php?mod=logging&action=login" in final_lower
-            or '<title>登录 -' in html
+            or "<title>登录 -" in html
             or 'class="pg_logging"' in lowered
-            or "name=\"loginfield\"" in lowered
-            or "id=\"lsform\"" in lowered
+            or 'name="loginfield"' in lowered
+            or 'id="lsform"' in lowered
         )
 
     def _get_sxsy_failure_message(
@@ -240,6 +249,8 @@ class SearchService:
             return "❌ 尚香书苑访问超时或网络错误"
         if reason == "search_post_error":
             return "❌ 尚香书苑搜索请求失败，请稍后重试"
+        if reason == "sxsy_connection_error":
+            return "❌ 尚香书苑网站当前无法访问，可能是网址已更换或网络不可达。"
         return "❌ 尚香书苑搜索失败，请稍后重试"
 
     def _classify_sxsy_search_page(self, html: str, final_url: str) -> tuple[str, str]:
@@ -285,7 +296,11 @@ class SearchService:
         }
 
     async def _ssb_login(
-        self, session: aiohttp.ClientSession, base_url: str, username: str, password: str
+        self,
+        session: aiohttp.ClientSession,
+        base_url: str,
+        username: str,
+        password: str,
     ) -> tuple[bool, str]:
         """参考 ssb.py 的登录逻辑"""
         try:
@@ -324,14 +339,18 @@ class SearchService:
                     if not formhash:
                         title = self._extract_page_title(html)
                         message = self._get_ssb_login_failure_message(
-                            "login_page_missing_formhash", title=title, final_url=final_url
+                            "login_page_missing_formhash",
+                            title=title,
+                            final_url=final_url,
                         )
                         logger.warning(
                             f"[SSB 登录] 登录页未获取到 formhash: title={title or 'N/A'}, url={final_url}, len={len(html)}"
                         )
                         if (
                             attempt < self.SSB_LOGIN_RETRY_ATTEMPTS
-                            and self._should_retry_ssb_login_reason("login_page_missing_formhash")
+                            and self._should_retry_ssb_login_reason(
+                                "login_page_missing_formhash"
+                            )
                         ):
                             await asyncio.sleep(self.SSB_LOGIN_RETRY_DELAY)
                             continue
@@ -382,6 +401,9 @@ class SearchService:
                     return False, message
         except ProxyError:
             raise
+        except aiohttp.ClientConnectorError as e:
+            logger.error(f"[SSB 登录] 连接异常: {e}")
+            return False, self._get_ssb_login_failure_message("login_connection_error")
         except Exception as e:
             logger.error(f"[SSB 登录] 异常: {e}")
         return False, "搜书吧登录时发生异常，请稍后重试。"
@@ -390,7 +412,9 @@ class SearchService:
         self, session: aiohttp.ClientSession, target_domains: list[str]
     ) -> Optional[str]:
         for domain_url in target_domains:
-            link_url = await self.url_resolver.extract_link_from_url(session, domain_url)
+            link_url = await self.url_resolver.extract_link_from_url(
+                session, domain_url
+            )
             if link_url:
                 return link_url
         return None
@@ -401,7 +425,7 @@ class SearchService:
         keyword: str,
         target_domains: list[str],
     ) -> tuple[bool, str, list[SsbSearchItem]]:
-        ssb_auth = self.plugin_config.get("ssb_auth", "")
+        ssb_auth = self.auth_cfg.get("ssb", "")
         if not ssb_auth or "&" not in ssb_auth:
             return False, " 请先在插件配置中设置 ssb_auth (格式: 账号&密码)。", []
 
@@ -485,9 +509,7 @@ class SearchService:
                 )
                 return False, "❌ 搜书吧搜索请求失败，请稍后重试", []
             html = await self.url_resolver.get_text(p_resp)
-            logger.debug(
-                f"[SSB 搜索] 搜索响应 URL: {p_resp.url}, 长度: {len(html)}"
-            )
+            logger.debug(f"[SSB 搜索] 搜索响应 URL: {p_resp.url}, 长度: {len(html)}")
 
         if "对不起，没有找到匹配结果。" in html:
             return False, f"📦 搜书吧未找到与 “{keyword}” 相关的搜索结果。", []
@@ -526,7 +548,11 @@ class SearchService:
     async def sxsy_search(
         self, session: aiohttp.ClientSession, keyword: str
     ) -> tuple[bool, str, list[SsbSearchItem]]:
-        cookie = self.plugin_config.get("sxsy_cookie", "") if self.plugin_config else ""
+        cookie = (
+            ((self.auth_cfg.get("sxsy", {}) or {}).get("cookie", "") or "")
+            if self.auth_cfg
+            else ""
+        )
         if not cookie:
             return False, "❌ 请先在插件配置中设置尚香书苑 Cookie。", []
 
@@ -580,16 +606,27 @@ class SearchService:
                         )
                         if (
                             attempt < self.SXSY_SEARCH_RETRY_ATTEMPTS
-                            and self._should_retry_sxsy_reason("search_page_missing_formhash")
+                            and self._should_retry_sxsy_reason(
+                                "search_page_missing_formhash"
+                            )
                         ):
                             await asyncio.sleep(self.SXSY_SEARCH_RETRY_DELAY)
                             continue
                         return False, last_error_message, []
             except ProxyError:
                 raise
+            except aiohttp.ClientConnectorError as e:
+                logger.error(f"[sxsy] 连接异常（获取 formhash）: {e}")
+                return (
+                    False,
+                    self._get_sxsy_failure_message("sxsy_connection_error"),
+                    [],
+                )
             except Exception as e:
                 logger.error(f"[sxsy] 获取 formhash 异常: {e}")
-                last_error_message = self._get_sxsy_failure_message("search_network_error")
+                last_error_message = self._get_sxsy_failure_message(
+                    "search_network_error"
+                )
                 if (
                     attempt < self.SXSY_SEARCH_RETRY_ATTEMPTS
                     and self._should_retry_sxsy_reason("search_network_error")
@@ -635,6 +672,13 @@ class SearchService:
                     )
             except ProxyError:
                 raise
+            except aiohttp.ClientConnectorError as e:
+                logger.error(f"[sxsy 搜索] POST 连接异常: {e}")
+                return (
+                    False,
+                    self._get_sxsy_failure_message("sxsy_connection_error"),
+                    [],
+                )
             except Exception as e:
                 logger.error(f"[sxsy 搜索] POST 请求异常: {e}")
                 last_error_message = self._get_sxsy_failure_message("search_post_error")
