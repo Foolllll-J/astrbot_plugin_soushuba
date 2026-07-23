@@ -207,7 +207,12 @@ class SearchService:
         tip = self._get_search_result_download_tip(command)
         if not tip:
             return reply
-        return f"{reply}\n\n{tip}"
+        header_end = reply.find("\n\u200b\n")
+        if header_end != -1:
+            header = reply[:header_end]
+            results = reply[header_end:]
+            return f"{header}\n\u200b\n{tip}{results}"
+        return f"{reply}\n\u200b\n{tip}"
 
     def _looks_like_sxsy_login_page(self, html: str, final_url: str = "") -> bool:
         lowered = html.lower()
@@ -541,7 +546,10 @@ class SearchService:
             results.append(f"【{i}】{title}\n📅 时间: {time_text}\n🔗 {link}")
             items_out.append(SsbSearchItem(title=title, link=link, time_text=time_text))
 
-        reply = f"✅ 为您找到以下关于 “{keyword}” 的结果：\n\n" + "\n\n".join(results)
+        reply = (
+            f"✅ 为您找到以下关于 “{keyword}” 的结果：\n\u200b\n"
+            + "\n\u200b\n".join(results)
+        )
         reply = self._append_search_result_tip(reply, "ssb")
         return True, reply, items_out
 
@@ -738,6 +746,9 @@ class SearchService:
             results.append(f"【{i}】{title}\n📅 时间: {time_text}\n🔗 {link}")
             items_out.append(SsbSearchItem(title=title, link=link, time_text=time_text))
 
-        reply = f"✅ 为您找到以下关于 “{keyword}” 的结果：\n\n" + "\n\n".join(results)
+        reply = (
+            f"✅ 为您找到以下关于 “{keyword}” 的结果：\n\u200b\n"
+            + "\n\u200b\n".join(results)
+        )
         reply = self._append_search_result_tip(reply, "sxsy")
         return True, reply, items_out
