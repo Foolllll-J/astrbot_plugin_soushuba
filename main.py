@@ -3,6 +3,7 @@ from bs4 import BeautifulSoup
 from typing import List, Optional
 import os
 import re
+import random
 
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, StarTools
@@ -73,7 +74,8 @@ class SoushuBaLinkExtractorPlugin(Star):
             download_cfg,
         )
         allow_users = download_cfg.get("allow_users", ["0"])
-        self.search_service.set_access_control(allow_users)
+        ban_download_users = download_cfg.get("ban_download_users", [])
+        self.search_service.set_access_control(allow_users, ban_download_users)
         self.ssb_flow = SsbFlow(
             self.search_service,
             self.ssb_download,
@@ -101,6 +103,7 @@ class SoushuBaLinkExtractorPlugin(Star):
 
     async def initialize(self):
         await self.site_monitor.start()
+        await self.ssb_download.sweep_stale_downloads()
         logger.debug(
             f"[状态监控] 后台任务已启动，检测间隔: {self.monitor_check_interval}s, "
             f"异常复检延迟: {self.monitor_failure_recheck_delay}s, "
@@ -230,8 +233,9 @@ class SoushuBaLinkExtractorPlugin(Star):
         async for result in self._handle_monitor_command(event, "sxsy", "尚香书苑"):
             yield result
 
-    async def _find_nav_link(self, session_factory, target_urls, link_regex):
-        """Find nav link from a list of nav URLs using given session factory."""
+    async def _find_nav_links(self, session_factory, target_urls, link_regex) -> list:
+        """Collect all nav links from a list of nav URLs using given session factory."""
+        collected: List[str] = []
         async with session_factory() as session:
             for url in target_urls:
                 try:
@@ -241,9 +245,10 @@ class SoushuBaLinkExtractorPlugin(Star):
                         if response.status == 200:
                             text = await self._get_text(response)
                             soup = BeautifulSoup(text, "lxml")
-                            link_element = soup.find("a", string=link_regex)
-                            if link_element and link_element.has_attr("href"):
-                                return link_element["href"]
+                            for link_element in soup.find_all("a", string=link_regex):
+                                href = link_element.get("href")
+                                if href and href not in collected:
+                                    collected.append(href)
                 except (
                     aiohttp.ClientProxyConnectionError,
                     aiohttp.ClientHttpProxyError,
@@ -251,11 +256,12 @@ class SoushuBaLinkExtractorPlugin(Star):
                     raise
                 except Exception:
                     continue
-        return None
+        return collected
 
-    async def _find_uaa_link(self, session_factory):
-        """Find uaa link using given session factory."""
+    async def _find_uaa_links(self, session_factory) -> list:
+        """Collect all uaa nav links using given session factory."""
         url = "https://uaadizhi.com/"
+        collected: List[str] = []
         async with session_factory() as session:
             try:
                 async with session.get(
@@ -268,28 +274,31 @@ class SoushuBaLinkExtractorPlugin(Star):
                             span = li.find("span")
                             if span and "最新" in span.get_text():
                                 a_tag = li.find("a")
-                                if a_tag:
-                                    return a_tag["href"]
+                                if a_tag and a_tag.get("href"):
+                                    href = a_tag["href"]
+                                    if href not in collected:
+                                        collected.append(href)
             except (aiohttp.ClientProxyConnectionError, aiohttp.ClientHttpProxyError):
                 raise
             except Exception:
                 pass
-        return None
+        return collected
 
     @filter.command("sis", alias={"第一会所"})
     async def sis_command(self, event: AstrMessageEvent):
         """获取第一会所的网址"""
         target_navs = ["http://sis001dz.org/", "http://www.sis001home.com/"]
         try:
-            link = await self._find_nav_link(
+            links = await self._find_nav_links(
                 self.session_factory, target_navs, re.compile(r"地址一")
             )
         except (aiohttp.ClientProxyConnectionError, aiohttp.ClientHttpProxyError):
             logger.warning("[SIS] 代理连接失败，回退直连获取网址...")
-            link = await self._find_nav_link(
+            links = await self._find_nav_links(
                 aiohttp.ClientSession, target_navs, re.compile(r"地址一")
             )
-        if link:
+        if links:
+            link = random.choice(links)
             yield event.plain_result(f"🔞 成功找到第一会所最新网址：\n{link}")
         else:
             yield event.plain_result("❌ 抱歉，第一会所导航站目前无法访问。")
@@ -299,15 +308,16 @@ class SoushuBaLinkExtractorPlugin(Star):
         """获取第一版主的网址"""
         target_navs = ["https://www.龙腾小说.com/", "http://01bz.cc/"]
         try:
-            link = await self._find_nav_link(
-                self.session_factory, target_navs, re.compile(r"最新线路\s*1")
+            links = await self._find_nav_links(
+                self.session_factory, target_navs, re.compile(r"最新线路")
             )
         except (aiohttp.ClientProxyConnectionError, aiohttp.ClientHttpProxyError):
             logger.warning("[01BZ] 代理连接失败，回退直连获取网址...")
-            link = await self._find_nav_link(
-                aiohttp.ClientSession, target_navs, re.compile(r"最新线路\s*1")
+            links = await self._find_nav_links(
+                aiohttp.ClientSession, target_navs, re.compile(r"最新线路")
             )
-        if link:
+        if links:
+            link = random.choice(links)
             yield event.plain_result(f"📚 成功找到第一版主最新网址：\n{link}")
         else:
             yield event.plain_result("❌ 抱歉，第一版主导航站目前无法访问。")
@@ -316,11 +326,12 @@ class SoushuBaLinkExtractorPlugin(Star):
     async def uaa_command(self, event: AstrMessageEvent):
         """获取有爱爱的网址"""
         try:
-            link = await self._find_uaa_link(self.session_factory)
+            links = await self._find_uaa_links(self.session_factory)
         except (aiohttp.ClientProxyConnectionError, aiohttp.ClientHttpProxyError):
             logger.warning("[UAA] 代理连接失败，回退直连获取网址...")
-            link = await self._find_uaa_link(aiohttp.ClientSession)
-        if link:
+            links = await self._find_uaa_links(aiohttp.ClientSession)
+        if links:
+            link = random.choice(links)
             yield event.plain_result(f"💕 成功找到有爱爱最新网址：\n{link}")
         else:
             yield event.plain_result("❌ 抱歉，有爱爱导航站目前无法访问。")

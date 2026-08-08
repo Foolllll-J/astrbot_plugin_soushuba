@@ -72,6 +72,12 @@
                     "0"
                 ]
             },
+            "ban_download_users": {
+                "description": "禁止下载用户列表",
+                "type": "list",
+                "hint": "填写用户 ID 列表。这些用户不允许购买/下载附件。留空则不限制。",
+                "default": []
+            },
             "daily_user_coin_limit": {
                 "description": "单用户每日金币上限",
                 "type": "int",
@@ -83,6 +89,24 @@
                 "type": "int",
                 "hint": "所有用户加起来每天最多消耗多少金币。0 表示不限制。",
                 "default": 0
+            },
+            "prefer_free_download": {
+                "description": "搜书吧免银币下载",
+                "type": "bool",
+                "hint": "开启后搜书吧付费附件优先走免银币直链，失败自动回退购买。关闭则始终走付费购买。",
+                "default": false
+            },
+            "auto_zip_enabled": {
+                "description": "发送失败自动打包 ZIP",
+                "type": "bool",
+                "hint": "开启后，普通文件发送失败时，自动将文件打包为 ZIP 重新发送，并提示解压密码（若有）。",
+                "default": false
+            },
+            "auto_zip_password": {
+                "description": "ZIP 加密密码",
+                "type": "string",
+                "hint": "补档 ZIP 使用的加密密码，留空表示不加密。开启自动打包 ZIP 后生效。",
+                "default": ""
             }
         }
     },

@@ -1,9 +1,5 @@
-import asyncio
 import aiohttp
 from astrbot.api import logger
-import astrbot.api.message_components as Comp
-from astrbot.core.pipeline.context_utils import call_event_hook
-from astrbot.core.star.star_handler import EventType
 
 from .cache import UserSearchCache, SsbSearchItem, SsbAttachment
 from .http_session import ProxyError
@@ -33,24 +29,6 @@ class SxsyFlow:
     def _is_url_arg(self, arg: str) -> bool:
         return arg.startswith("http://") or arg.startswith("https://")
 
-    async def _send_chain_with_hooks(self, event, chain: list):
-        previous_result = event.get_result()
-        result = event.chain_result(chain)
-        event.set_result(result)
-        try:
-            if await call_event_hook(event, EventType.OnDecoratingResultEvent):
-                return
-            result = event.get_result()
-            if not result or not result.chain:
-                return
-            await event.send(result.derive(result.chain))
-            await call_event_hook(event, EventType.OnAfterMessageSentEvent)
-        finally:
-            if previous_result is None:
-                event.clear_result()
-            else:
-                event.set_result(previous_result)
-
     async def _send_plain_immediately(self, event, text: str):
         await event.send(event.plain_result(text))
 
@@ -75,12 +53,13 @@ class SxsyFlow:
 
     async def _exec_post_selection(self, session, event, post, user_id):
         results = []
-        attachments = await self.download_service.fetch_sxsy_post_attachments(
+        attachments, reason = await self.download_service.fetch_sxsy_post_attachments(
             session, post.link
         )
         if not attachments:
+            msg = reason or "未解析到附件，可能帖子无附件或 Cookie 已失效。"
             return [
-                event.plain_result("❌ 未解析到附件，可能帖子无附件或 Cookie 已失效。")
+                event.plain_result(f"❌ {msg}")
             ]
 
         if len(attachments) == 1:
@@ -206,30 +185,9 @@ class SxsyFlow:
         if (not event.is_admin()) and user_limit > 0:
             remain_show = remain_after if remain_after is not None else user_limit
             tip = f"（本次下载花费 {spent_coin} 金钱，今日还可花费 {remain_show} 金钱）"
-        chain = [
-            Comp.Plain(f"✅ 已下载：{att.name}{tip}"),
-            Comp.File(name=att.name, file=file_path),
-        ]
-        try:
-            await self._send_chain_with_hooks(event, chain)
-        except Exception as e:
-            err = str(e)
-            if "rich media transfer failed" in err or "retcode=1200" in err:
-                fallback = f"⚠️ {att.name} 文件发送失败，建议自行通过网站下载。"
-                try:
-                    await event.send(event.plain_result(fallback))
-                    return []
-                except Exception:
-                    return [event.plain_result(fallback)]
-            return [event.plain_result(f"❌ {att.name} 发送失败：{err}")]
-
-        try:
-            asyncio.get_running_loop().create_task(
-                self.download_service.schedule_cleanup(file_path)
-            )
-        except RuntimeError:
-            pass
-        return []
+        return await self.download_service.send_downloaded_file(
+            event, att.name, file_path, tip
+        )
 
     async def handle(self, event, arg: str):
         arg = arg.strip()

@@ -4,15 +4,19 @@ import time
 import asyncio
 import random
 import json
+import base64
 import subprocess
 import datetime
 from typing import List, Optional
-from urllib.parse import urljoin, urlparse, parse_qs, urlencode, unquote
+from urllib.parse import urljoin, urlparse, parse_qs, urlencode, unquote, quote
 
 import aiohttp
 from yarl import URL
 from bs4 import BeautifulSoup
 from astrbot.api import logger
+import astrbot.api.message_components as Comp
+from astrbot.core.pipeline.context_utils import call_event_hook
+from astrbot.core.star.star_handler import EventType
 
 from .cache import SsbAttachment
 from .url_resolver import UrlResolver
@@ -39,6 +43,10 @@ class SsbDownloadService:
         self.download_cfg = download_cfg or {}
         self.download_dir = os.path.join(self.data_dir, "downloads", "ssb")
         os.makedirs(self.download_dir, exist_ok=True)
+        self.download_sxsy_dir = os.path.join(self.data_dir, "downloads", "sxsy")
+        os.makedirs(self.download_sxsy_dir, exist_ok=True)
+        self.zip_fallback_dir = os.path.join(self.data_dir, "downloads", "zip_fallback")
+        os.makedirs(self.zip_fallback_dir, exist_ok=True)
         self.cleanup_delay = 300
         self.get_kv_data = get_kv_data
         self.put_kv_data = put_kv_data
@@ -644,25 +652,33 @@ console.log(JSON.stringify(captured));
             return match.group(1).lower()
         return None
 
-    def _detect_gated_content(self, html: str) -> List[str]:
-        hints = []
-        if self._needs_reply_unlock(html):
-            hints.append("可能需要回复后可见")
-        if "权限不足" in html:
-            hints.append("可能权限不足")
-        return hints
+    def _is_bounty_post(self, html: str) -> bool:
+        return any(s in html for s in (
+            "<!--悬赏-->",
+            "最佳答案",
+            "class=\"typeoption\"",
+            "id=\"bestanswer\"",
+            "悬赏",
+        ))
 
     def _needs_reply_unlock(self, html: str) -> bool:
         return "如果您要查看本帖隐藏内容请" in html
 
     async def fetch_post_attachments(
         self, session: aiohttp.ClientSession, post_url: str
-    ) -> List[SsbAttachment]:
+    ) -> tuple[list[SsbAttachment], str]:
         logger.debug(f"[SSB 下载] 抓取帖子附件: {post_url}")
         html, final_url = await self._fetch_post_html(session, post_url)
-        return await self._parse_attachments_with_retry(
+        attachments = await self._parse_attachments_with_retry(
             session, html, final_url, post_url
         )
+        reason = ""
+        if not attachments:
+            if self._is_bounty_post(html):
+                reason = "该帖子为悬赏帖，请自行前往帖子查看"
+            else:
+                reason = "未解析到附件"
+        return attachments, reason
 
     async def _parse_attachments_with_retry(
         self,
@@ -671,9 +687,8 @@ console.log(JSON.stringify(captured));
         final_url: str,
         post_url: str,
     ) -> List[SsbAttachment]:
-        gated_hints = self._detect_gated_content(html)
-        if gated_hints:
-            logger.debug(f"[SSB 下载] 帖子可能受限: {'; '.join(gated_hints)}")
+        if self._is_bounty_post(html):
+            logger.debug("[SSB 下载] 帖子为悬赏帖")
 
         attachments = self._parse_attachments(html, final_url)
         if attachments:
@@ -962,7 +977,7 @@ console.log(JSON.stringify(captured));
 
     async def fetch_sxsy_post_attachments(
         self, session: aiohttp.ClientSession, post_url: str
-    ) -> List[SsbAttachment]:
+    ) -> tuple[List[SsbAttachment], str]:
         logger.debug(f"[SXSY 下载] 抓取帖子附件: {post_url}")
         base_url = self.url_resolver.normalize_base_url(post_url)
         self._ensure_sxsy_session_cookies(session, base_url)
@@ -1040,6 +1055,9 @@ console.log(JSON.stringify(captured));
                 f"has_dsign_literal={'_dsign' in raw_lower}, raw_len={len(html or '')}"
             )
         html = self._decode_sxsy_obfuscated_html(html)
+        if self._is_bounty_post(html):
+            logger.debug("[SXSY 下载] 帖子为悬赏帖")
+            return [], "该帖子为悬赏帖，请自行前往帖子查看"
         attachments = self._parse_sxsy_attachments(html, final_url)
         if not attachments:
             lowered = html.lower()
@@ -1065,7 +1083,13 @@ console.log(JSON.stringify(captured));
                 f"body_len={len(html)}, has_html_tag={'<html' in lowered}, snippet={snippet or '-'}"
             )
         logger.debug(f"[SXSY 下载] 解析到附件数: {len(attachments)}")
-        return attachments
+        reason = ""
+        if not attachments:
+            if self._is_bounty_post(html):
+                reason = "该帖子为悬赏帖，请自行前往帖子查看"
+            else:
+                reason = "未解析到附件"
+        return attachments, reason
 
     async def purchase_sxsy_attachment(
         self,
@@ -1290,7 +1314,7 @@ console.log(JSON.stringify(captured));
 
         filename = self._sanitize_filename(attachment.name)
         ts = int(time.time())
-        file_path = os.path.join(self.download_dir, f"{ts}_{filename}")
+        file_path = os.path.join(self.download_sxsy_dir, f"{ts}_{filename}")
         logger.debug(f"[SXSY 下载] 开始下载: {download_url} -> {file_path}")
 
         async with session.get(
@@ -1504,6 +1528,61 @@ console.log(JSON.stringify(captured));
             logger.warning(f"[SSB 下载] 购买响应未识别: {preview}")
             return False, msg_text or "购买失败", None, 0, remain_after
 
+    def _extract_ssb_regen_attachment_url(
+        self, html: str, base: str
+    ) -> Optional[str]:
+        """从"附件链接失效"页提取服务端重签的合法附件令牌直链"""
+        soup = BeautifulSoup(html, "lxml")
+        for a in soup.find_all("a", href=True):
+            href = a.get("href", "")
+            if "mod=attachment" in href and "aid=" in href:
+                return urljoin(base, href)
+        return None
+
+    async def _try_ssb_free_download(
+        self,
+        session: aiohttp.ClientSession,
+        post_url: str,
+        aid: str,
+    ) -> Optional[str]:
+        """搜书吧免银币直链尝试"""
+        tid = self._extract_tid_from_url(post_url) or "0"
+        fake = base64.b64encode(f"{aid}|1|1|1|{tid}".encode()).decode()
+        netloc = urlparse(post_url).netloc
+        fake_url = (
+            f"https://{netloc}/forum.php?mod=attachment&aid={quote(fake, safe='')}"
+        )
+        logger.debug(f"[SSB 下载] 尝试免积分直链: aid={aid}, tid={tid}")
+        try:
+            async with session.get(
+                fake_url,
+                headers={**self.headers, "Referer": post_url},
+                timeout=20,
+                ssl=False,
+            ) as resp:
+                if resp.status != 200:
+                    logger.debug(
+                        f"[SSB 下载] 免积分直链状态异常: status={resp.status}"
+                    )
+                    return None
+                content_type = resp.headers.get("Content-Type", "")
+                if "text/html" not in content_type:
+                    logger.debug(
+                        f"[SSB 下载] 免积分直链直接命中文件: content-type={content_type}"
+                    )
+                    return fake_url
+                html = await self.url_resolver.get_text(resp)
+                regen = self._extract_ssb_regen_attachment_url(html, fake_url)
+                if regen:
+                    return regen
+                logger.debug(
+                    f"[SSB 下载] 免积分直链未命中: body_len={len(html)}"
+                )
+                return None
+        except Exception as e:
+            logger.warning(f"[SSB 下载] 免积分直链尝试异常: {e}")
+            return None
+
     def _extract_download_url(
         self, html: str, post_url: str, aid: Optional[str]
     ) -> Optional[str]:
@@ -1573,9 +1652,6 @@ console.log(JSON.stringify(captured));
         html = ""
         if post_url:
             html, final_url = await self._fetch_post_html(session, post_url)
-            gated_hints = self._detect_gated_content(html)
-            if gated_hints:
-                logger.debug(f"[SSB 下载] 帖子可能受限: {'; '.join(gated_hints)}")
 
         if attachment.aid and html:
             resolved = self._extract_download_url(html, post_url, attachment.aid)
@@ -1592,25 +1668,44 @@ console.log(JSON.stringify(captured));
                     download_url = resolved
 
         if attachment.pay_url and attachment.aid and html:
-            logger.debug(f"[SSB 下载] 附件可能需要购买: aid={attachment.aid}")
-            (
-                ok,
-                msg,
-                direct_url,
-                spent_coin,
-                remain_after,
-            ) = await self.purchase_attachment(
-                session, post_url, attachment.aid, html, user_id, is_admin
-            )
-            if not ok:
-                return False, f"购买失败：{msg}", None, spent_coin, remain_after
-            if direct_url:
-                download_url = direct_url
+            purchased = False
+            if self.download_cfg.get("prefer_free_download", True):
+                free_url = await self._try_ssb_free_download(
+                    session, post_url, attachment.aid
+                )
+                if free_url:
+                    download_url = free_url
+                    purchased = True
+                    logger.debug(
+                        f"[SSB 下载] 免积分直链命中，跳过购买流程: {free_url}"
+                    )
+                else:
+                    logger.debug(
+                        f"[SSB 下载] 免积分直链未命中，回退购买流程: aid={attachment.aid}"
+                    )
             else:
-                html, _ = await self._fetch_post_html(session, post_url)
-                resolved = self._extract_download_url(html, post_url, attachment.aid)
-                if resolved:
-                    download_url = resolved
+                logger.debug(f"[SSB 下载] 附件需购买: aid={attachment.aid}")
+            if not purchased:
+                (
+                    ok,
+                    msg,
+                    direct_url,
+                    spent_coin,
+                    remain_after,
+                ) = await self.purchase_attachment(
+                    session, post_url, attachment.aid, html, user_id, is_admin
+                )
+                if not ok:
+                    return False, f"购买失败：{msg}", None, spent_coin, remain_after
+                if direct_url:
+                    download_url = direct_url
+                else:
+                    html, _ = await self._fetch_post_html(session, post_url)
+                    resolved = self._extract_download_url(
+                        html, post_url, attachment.aid
+                    )
+                    if resolved:
+                        download_url = resolved
 
         filename = self._sanitize_filename(attachment.name)
         ts = int(time.time())
@@ -1634,13 +1729,7 @@ console.log(JSON.stringify(captured));
             content_type = resp.headers.get("Content-Type", "")
             if "text/html" in content_type:
                 html = await self.url_resolver.get_text(resp)
-                hints = self._detect_gated_content(html)
-                hint_msg = (
-                    "; ".join(hints)
-                    if hints
-                    else "返回HTML页面，可能需要回复或购买附件"
-                )
-                return False, hint_msg, None, spent_coin, remain_after
+                return False, "返回HTML页面，可能需要回复或购买附件", None, spent_coin, remain_after
 
             with open(file_path, "wb") as f:
                 async for chunk in resp.content.iter_chunked(1024 * 64):
@@ -1671,3 +1760,163 @@ console.log(JSON.stringify(captured));
                 logger.debug(f"[SSB 下载] 已清理文件: {file_path}")
         except Exception as e:
             logger.warning(f"[SSB 下载] 清理文件失败: {e}")
+
+    async def _send_chain_with_hooks(self, event, chain: list):
+        previous_result = event.get_result()
+        result = event.chain_result(chain)
+        event.set_result(result)
+        try:
+            if await call_event_hook(event, EventType.OnDecoratingResultEvent):
+                return
+            result = event.get_result()
+            if not result or not result.chain:
+                return
+            await event.send(result.derive(result.chain))
+            await call_event_hook(event, EventType.OnAfterMessageSentEvent)
+        finally:
+            if previous_result is None:
+                event.clear_result()
+            else:
+                event.set_result(previous_result)
+
+    def _schedule_cleanup(self, file_path: str):
+        try:
+            asyncio.get_running_loop().create_task(self.schedule_cleanup(file_path))
+        except RuntimeError:
+            pass
+
+    def _get_auto_zip_config(self) -> tuple[bool, str]:
+        enabled = bool(self.download_cfg.get("auto_zip_enabled", False))
+        password = str(self.download_cfg.get("auto_zip_password", "") or "")
+        return enabled, password
+
+    def _build_zip_fallback_path(self, name: str) -> str:
+        base = os.path.splitext(self._sanitize_filename(name))[0] or "attachment"
+        ts = int(time.time())
+        return os.path.join(self.zip_fallback_dir, f"{ts}_{base}.zip")
+
+    def _build_zip_display_name(self, name: str) -> str:
+        base = os.path.splitext(self._sanitize_filename(name))[0] or "attachment"
+        return f"{base}.zip"
+
+    def _create_zip_fallback(
+        self, src_path: str, arc_name: str, password: str
+    ) -> Optional[str]:
+        """将文件打包为 ZIP（可选 AES 加密），返回 zip 路径；失败返回 None。"""
+        try:
+            import pyzipper
+        except ImportError:
+            logger.warning("[发送] 未安装 pyzipper，无法自动打包 ZIP")
+            return None
+        zip_path = self._build_zip_fallback_path(arc_name)
+        try:
+            if password:
+                with pyzipper.AESZipFile(
+                    zip_path,
+                    "w",
+                    compression=pyzipper.ZIP_DEFLATED,
+                    encryption=pyzipper.WZ_AES,
+                ) as zf:
+                    zf.setpassword(password.encode("utf-8"))
+                    zf.write(src_path, arcname=os.path.basename(arc_name))
+            else:
+                with pyzipper.ZipFile(
+                    zip_path, "w", compression=pyzipper.ZIP_DEFLATED
+                ) as zf:
+                    zf.write(src_path, arcname=os.path.basename(arc_name))
+            logger.debug(f"[发送] 已自动打包 ZIP: {zip_path}")
+            return zip_path
+        except Exception as e:
+            logger.warning(f"[发送] 自动打包 ZIP 失败: {e}")
+            try:
+                if os.path.exists(zip_path):
+                    os.remove(zip_path)
+            except OSError:
+                pass
+            return None
+
+    async def send_downloaded_file(
+        self, event, att_name: str, file_path: str, tip: str = ""
+    ) -> list:
+        """发送下载好的附件文件；发送失败时按配置自动打包 ZIP 重发。返回需补发的文案结果列表。"""
+        chain = [
+            Comp.Plain(f"✅ 已下载：{att_name}{tip}"),
+            Comp.File(name=att_name, file=file_path),
+        ]
+        try:
+            await self._send_chain_with_hooks(event, chain)
+        except Exception as e:
+            err = str(e)
+            self._schedule_cleanup(file_path)
+            if "rich media transfer failed" in err or "retcode=1200" in err:
+                enabled, password = self._get_auto_zip_config()
+                if enabled and os.path.exists(file_path):
+                    zip_path = self._create_zip_fallback(file_path, att_name, password)
+                    if zip_path:
+                        zip_name = self._build_zip_display_name(att_name)
+                        # 先单独发送压缩包文件，确认成功后再发提示文案，避免文案已送达而文件失败造成误导
+                        zip_ok = False
+                        try:
+                            await self._send_chain_with_hooks(
+                                event, [Comp.File(name=zip_name, file=zip_path)]
+                            )
+                            zip_ok = True
+                        except Exception as zip_err:
+                            logger.warning(f"[发送] ZIP 补档发送也失败: {zip_err}")
+                        finally:
+                            self._schedule_cleanup(zip_path)
+                        if zip_ok:
+                            notice = (
+                                f"⚠️ {att_name} 文件发送失败，"
+                                f"已自动使用压缩包发送：{zip_name}"
+                            )
+                            if password:
+                                notice += f"\n🔑 解压密码：{password}"
+                            try:
+                                await self._send_chain_with_hooks(
+                                    event, [Comp.Plain(notice)]
+                                )
+                                return []
+                            except Exception:
+                                return [event.plain_result(notice)]
+                        zip_fallback_text = (
+                            f"⚠️ {att_name} 自动补档的压缩包发送失败，"
+                            f"建议自行通过网站下载。"
+                        )
+                        try:
+                            await event.send(event.plain_result(zip_fallback_text))
+                            return []
+                        except Exception:
+                            return [event.plain_result(zip_fallback_text)]
+                fallback = f"⚠️ {att_name} 文件发送失败，建议自行通过网站下载。"
+                try:
+                    await event.send(event.plain_result(fallback))
+                    return []
+                except Exception:
+                    return [event.plain_result(fallback)]
+            return [event.plain_result(f"❌ {att_name} 发送失败：{err}")]
+        self._schedule_cleanup(file_path)
+        return []
+
+    async def sweep_stale_downloads(self) -> None:
+        """启动/定时兜底：删除下载目录中超出保留期的残留文件，防重启或发送失败导致堆积。"""
+        threshold = max(self.cleanup_delay * 12, 3600)
+        deadline = time.time() - threshold
+        for directory in (
+            self.download_dir,
+            self.download_sxsy_dir,
+            self.zip_fallback_dir,
+        ):
+            try:
+                entries = os.listdir(directory)
+            except OSError:
+                continue
+            for name in entries:
+                file_path = os.path.join(directory, name)
+                try:
+                    if os.path.isfile(file_path) and os.path.getmtime(file_path) < deadline:
+                        os.remove(file_path)
+                        logger.debug(f"[下载清理] 已清除残留文件: {file_path}")
+                except OSError:
+                    continue
+        logger.debug(f"[下载清理] 兜底扫描完成，保留时长: {threshold}s")

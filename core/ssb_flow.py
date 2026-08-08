@@ -1,9 +1,6 @@
 import aiohttp
 import asyncio
 from astrbot.api import logger
-import astrbot.api.message_components as Comp
-from astrbot.core.pipeline.context_utils import call_event_hook
-from astrbot.core.star.star_handler import EventType
 
 from .cache import UserSearchCache, SsbSearchItem, SsbAttachment
 from .http_session import ProxyError
@@ -35,53 +32,49 @@ class SsbFlow:
     def _is_url_arg(self, arg: str) -> bool:
         return arg.startswith("http://") or arg.startswith("https://")
 
-    async def _send_chain_with_hooks(self, event, chain: list):
-        previous_result = event.get_result()
-        result = event.chain_result(chain)
-        event.set_result(result)
-        try:
-            if await call_event_hook(event, EventType.OnDecoratingResultEvent):
-                return
-            result = event.get_result()
-            if not result or not result.chain:
-                return
-            await event.send(result.derive(result.chain))
-            await call_event_hook(event, EventType.OnAfterMessageSentEvent)
-        finally:
-            if previous_result is None:
-                event.clear_result()
-            else:
-                event.set_result(previous_result)
-
     async def _send_plain_immediately(self, event, text: str):
         await event.send(event.plain_result(text))
 
     async def _exec_ssb_search(self, keyword: str):
-        """Execute ssb_search with proxy fallback. Returns (ok, message, items)."""
-        try:
-            async with self.session_factory() as session:
-                return await self.search_service.ssb_search(
-                    session, keyword, self.target_domains
-                )
-        except ProxyError:
-            logger.warning("[SSB] 代理连接失败，回退直连搜索...")
-            async with aiohttp.ClientSession() as session:
-                return await self.search_service.ssb_search(
-                    session, keyword, self.target_domains
-                )
+        """Execute ssb_search with proxy fallback + cache refresh on connection error."""
+        for attempt in range(2):
+            try:
+                try:
+                    async with self.session_factory() as session:
+                        return await self.search_service.ssb_search(
+                            session, keyword, self.target_domains
+                        )
+                except ProxyError:
+                    logger.warning("[SSB] 代理连接失败，回退直连搜索...")
+                    async with aiohttp.ClientSession() as session:
+                        return await self.search_service.ssb_search(
+                            session, keyword, self.target_domains
+                        )
+            except (
+                aiohttp.ClientConnectorError,
+                aiohttp.ClientResponseError,
+                asyncio.TimeoutError,
+            ) as e:
+                if attempt == 0:
+                    logger.warning(
+                        f"[SSB] 请求失败({e})，可能网址已变更，尝试刷新缓存..."
+                    )
+                    self.search_service.url_resolver.invalidate_ssb_url_cache()
+                    continue
+                raise
 
     async def _exec_find_ssb_url(self):
         """Execute find_ssb_latest_url with proxy fallback. Returns url or None."""
         try:
             async with self.session_factory() as session:
                 return await self.search_service.find_ssb_latest_url(
-                    session, self.target_domains
+                    session, self.target_domains, force_refresh=True
                 )
         except ProxyError:
             logger.warning("[SSB] 代理连接失败，回退直连获取网址...")
             async with aiohttp.ClientSession() as session:
                 return await self.search_service.find_ssb_latest_url(
-                    session, self.target_domains
+                    session, self.target_domains, force_refresh=True
                 )
 
     async def _exec_post_selection(self, session, event, post, user_id):
@@ -93,11 +86,13 @@ class SsbFlow:
         if not ok:
             return [event.plain_result(f"❌ {msg}")]
 
-        attachments = await self.download_service.fetch_post_attachments(
+        attachments, fail_reason = await self.download_service.fetch_post_attachments(
             session, post.link
         )
         if not attachments:
-            return [event.plain_result("❌ 未解析到附件，可能需要回复或购买附件。")]
+            if fail_reason:
+                return [event.plain_result(f"❌ {fail_reason}")]
+            return [event.plain_result("❌ 未解析到附件")]
 
         if len(attachments) == 1:
             await self._send_plain_immediately(event, "检测到 1 个附件，开始下载...")
@@ -169,6 +164,15 @@ class SsbFlow:
     ):
         """Run attachment-selection logic with a given session. Returns list of results."""
         results = []
+        if attachments:
+            base_url = self.download_service.url_resolver.normalize_base_url(
+                attachments[0].post_url or attachments[0].url
+            )
+            ok, msg = await self.download_service.ensure_login(session, base_url)
+            logger.debug(f"[SSB 登录] {msg}")
+            if not ok:
+                self.cache.clear_pending_attachments(user_id)
+                return [event.plain_result(f"❌ {msg}")]
         if index == 0:
             await self._send_plain_immediately(
                 event, f"开始下载全部附件，共 {len(attachments)} 个..."
@@ -237,30 +241,9 @@ class SsbFlow:
         if (not event.is_admin()) and user_limit > 0:
             remain_show = remain_after if remain_after is not None else user_limit
             tip = f"（本次下载花费 {spent_coin} 银币，今日还可花费 {remain_show} 银币）"
-        chain = [
-            Comp.Plain(f"✅ 已下载：{att.name}{tip}"),
-            Comp.File(name=att.name, file=file_path),
-        ]
-        try:
-            await self._send_chain_with_hooks(event, chain)
-        except Exception as e:
-            err = str(e)
-            if "rich media transfer failed" in err or "retcode=1200" in err:
-                fallback = f"⚠️ {att.name} 文件发送失败，建议自行通过网站下载。"
-                try:
-                    await event.send(event.plain_result(fallback))
-                    return []
-                except Exception:
-                    return [event.plain_result(fallback)]
-            return [event.plain_result(f"❌ {att.name} 发送失败：{err}")]
-
-        try:
-            asyncio.get_running_loop().create_task(
-                self.download_service.schedule_cleanup(file_path)
-            )
-        except RuntimeError:
-            pass
-        return []
+        return await self.download_service.send_downloaded_file(
+            event, att.name, file_path, tip
+        )
 
     async def handle(self, event, arg: str | None):
         if not arg:

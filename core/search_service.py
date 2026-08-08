@@ -37,16 +37,23 @@ class SearchService:
         self.url_resolver = url_resolver
         self.last_ssb_search_time = 0
         self._allow_users: list[str] = []
+        self._ban_download_users: list[str] = []
 
     def set_access_control(
         self,
         allow_users: Iterable[str] | None,
+        ban_download_users: Iterable[str] | None = None,
     ) -> None:
         self._allow_users = [
             str(x).strip() for x in (allow_users or []) if str(x).strip()
         ]
+        self._ban_download_users = [
+            str(x).strip() for x in (ban_download_users or []) if str(x).strip()
+        ]
 
     def is_download_allowed(self, user_id: str, is_admin: bool) -> bool:
+        if str(user_id) in set(self._ban_download_users):
+            return False
         if is_admin:
             return True
         if not self._allow_users:
@@ -124,11 +131,8 @@ class SearchService:
         if reason == "login_page_status":
             return f"搜书吧登录页访问异常（HTTP {status or '未知'}），请稍后重试。"
         if reason == "login_page_missing_formhash":
-            title_hint = f"当前页面标题：{title}。" if title else ""
-            return (
-                "搜书吧登录页异常，未获取到 formhash，可能是站点临时异常、风控页或页面结构变化，请稍后重试。"
-                + title_hint
-            )
+            title_hint = f" 当前页面标题：{title}。" if title else ""
+            return "搜书吧登录页异常。" + title_hint
         if reason == "login_failed_bad_credentials":
             return "搜书吧登录失败，账号或密码可能不正确，请检查 ssb_auth 配置。"
         if reason == "login_failed_captcha":
@@ -198,7 +202,7 @@ class SearchService:
     def _get_search_result_download_tip(self, command: str) -> str:
         allow_users = self._allow_users
         is_admin_only = "0" in allow_users
-        tip = f"⬇️ 可继续发送 /{command} 序号 下载对应附件。"
+        tip = f"可继续发送 /{command} 序号 下载对应附件。"
         if is_admin_only:
             tip += " 当前下载功能仅管理员可用。"
         return tip
@@ -211,7 +215,10 @@ class SearchService:
         if header_end != -1:
             header = reply[:header_end]
             results = reply[header_end:]
-            return f"{header}\n\u200b\n{tip}{results}"
+            if header.endswith("："):
+                header = header[:-1]
+            tip_clean = tip.rstrip("。")
+            return f"{header}，{tip_clean}：{results}"
         return f"{reply}\n\u200b\n{tip}"
 
     def _looks_like_sxsy_login_page(self, html: str, final_url: str = "") -> bool:
@@ -237,10 +244,7 @@ class SearchService:
             return f"❌ 尚香书苑搜索页访问异常（HTTP {status or '未知'}），请稍后重试"
         if reason == "search_page_missing_formhash":
             title_hint = f" 当前页面标题：{title}。" if title else ""
-            return (
-                "❌ 尚香书苑搜索页异常，未获取到 formhash，可能是站点临时异常、风控页或页面结构变化，请稍后重试。"
-                + title_hint
-            )
+            return "❌ 尚香书苑搜索页异常。" + title_hint
         if reason == "search_post_status":
             return f"❌ 尚香书苑搜索请求异常（HTTP {status or '未知'}），请稍后重试"
         if reason == "cookie_expired":
@@ -342,6 +346,9 @@ class SearchService:
 
                     formhash = self._extract_formhash(html)
                     if not formhash:
+                        health_error = self.url_resolver.check_ssb_page_health(html)
+                        if health_error:
+                            return False, f"搜书吧登录异常：{health_error}，请稍后重试。"
                         title = self._extract_page_title(html)
                         message = self._get_ssb_login_failure_message(
                             "login_page_missing_formhash",
@@ -414,15 +421,12 @@ class SearchService:
         return False, "搜书吧登录时发生异常，请稍后重试。"
 
     async def find_ssb_latest_url(
-        self, session: aiohttp.ClientSession, target_domains: list[str]
+        self, session: aiohttp.ClientSession, target_domains: list[str],
+        force_refresh: bool = False
     ) -> Optional[str]:
-        for domain_url in target_domains:
-            link_url = await self.url_resolver.extract_link_from_url(
-                session, domain_url
-            )
-            if link_url:
-                return link_url
-        return None
+        return await self.url_resolver.resolve_ssb_monitor_url(
+            session, force_refresh=force_refresh
+        )
 
     async def ssb_search(
         self,
@@ -524,9 +528,13 @@ class SearchService:
         logger.debug(f"[SSB 搜索] 解析到 {len(items)} 条结果")
 
         if not items:
-            if "验证码" in html or "secqaa" in html:
-                return False, " 搜索触发了验证码，请稍后再试。", []
-            return False, " 无法获取搜索结果，可能是被拦截或解析失败。", []
+            title = self._extract_page_title(html)
+            snippet = " ".join(html.strip().split())[:200]
+            logger.debug(
+                f"[SSB 搜索] 未解析到结果 item，页面特征: title={title or '-'}, "
+                f"body_len={len(html)}, snippet={snippet}"
+            )
+            return False, "❌ 无法获取搜索结果，请稍后重试。", []
 
         results = []
         items_out: list[SsbSearchItem] = []
@@ -603,6 +611,9 @@ class SearchService:
                     f_html = await self.url_resolver.get_text(f_resp)
                     formhash = self._extract_formhash(f_html)
                     if not formhash:
+                        health_error = self.url_resolver.check_ssb_page_health(f_html)
+                        if health_error:
+                            return False, f"❌ 尚香书苑搜索异常：{health_error}，请稍后重试。", []
                         title = self._extract_page_title(f_html)
                         last_error_message = self._get_sxsy_failure_message(
                             "search_page_missing_formhash",
@@ -625,11 +636,16 @@ class SearchService:
                 raise
             except aiohttp.ClientConnectorError as e:
                 logger.error(f"[sxsy] 连接异常（获取 formhash）: {e}")
-                return (
-                    False,
-                    self._get_sxsy_failure_message("sxsy_connection_error"),
-                    [],
+                last_error_message = self._get_sxsy_failure_message(
+                    "sxsy_connection_error"
                 )
+                if (
+                    attempt < self.SXSY_SEARCH_RETRY_ATTEMPTS
+                    and self._should_retry_sxsy_reason("search_network_error")
+                ):
+                    await asyncio.sleep(self.SXSY_SEARCH_RETRY_DELAY)
+                    continue
+                return False, last_error_message, []
             except Exception as e:
                 logger.error(f"[sxsy] 获取 formhash 异常: {e}")
                 last_error_message = self._get_sxsy_failure_message(
@@ -726,7 +742,19 @@ class SearchService:
         logger.debug(f"[sxsy 搜索] 解析到 {len(items)} 条结果")
 
         if not items:
-            return False, "❌ 无法获取搜索结果，请检查 Cookie 是否过期。", []
+            title = self._extract_page_title(html)
+            snippet = " ".join(html.strip().split())[:200]
+            logger.debug(
+                f"[sxsy 搜索] 未解析到结果 item，页面特征: title={title or '-'}, "
+                f"body_len={len(html)}, snippet={snippet}"
+            )
+            if self._looks_like_sxsy_login_page(html):
+                return (
+                    False,
+                    "❌ 尚香书苑 Cookie 已失效或未登录，请更新 CK。",
+                    [],
+                )
+            return False, "❌ 无法获取搜索结果，请稍后重试。", []
 
         results = []
         items_out: list[SsbSearchItem] = []

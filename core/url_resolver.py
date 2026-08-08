@@ -18,6 +18,10 @@ class UrlResolver:
         self.headers = headers
         self.auth_cfg = auth_cfg or {}
         self.target_domains = target_domains
+        self._ssb_url_cache: str | None = None
+
+    def invalidate_ssb_url_cache(self):
+        self._ssb_url_cache = None
 
     def normalize_base_url(self, url: str) -> str:
         parsed = urlparse(url)
@@ -167,12 +171,18 @@ class UrlResolver:
         return None
 
     async def resolve_ssb_monitor_url(
-        self, session: aiohttp.ClientSession
+        self, session: aiohttp.ClientSession, force_refresh: bool = False
     ) -> Optional[str]:
+        if not force_refresh and self._ssb_url_cache:
+            return self._ssb_url_cache
         for domain_url in self.target_domains:
             link_url = await self.extract_link_from_url(session, domain_url)
             if link_url:
-                return self.normalize_base_url(link_url)
+                url = self.normalize_base_url(link_url)
+                if url != self._ssb_url_cache:
+                    logger.debug(f"[SSB 网址缓存] 更新: {self._ssb_url_cache} -> {url}")
+                self._ssb_url_cache = url
+                return url
         return None
 
     async def resolve_sxsy_monitor_url(
