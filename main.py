@@ -284,6 +284,59 @@ class SoushuBaLinkExtractorPlugin(Star):
                 pass
         return collected
 
+    async def _find_jm_links(self, session_factory) -> dict:
+        """Collect JM comic site links and app download link using given session factory."""
+        url = "https://jmcomicmi.net/"
+        collected: dict = {"sites": [], "app": None}
+        async with session_factory() as session:
+            try:
+                async with session.get(
+                    url, headers=self.headers, timeout=10
+                ) as response:
+                    if response.status == 200:
+                        text = await self._get_text(response)
+                        soup = BeautifulSoup(text, "lxml")
+                        for cls in ("china", "first_line", "second_line"):
+                            div = soup.find("div", class_=cls)
+                            if div:
+                                for span in div.find_all("span"):
+                                    site = span.get_text(strip=True)
+                                    if site and site not in collected["sites"]:
+                                        collected["sites"].append(site)
+                        app_div = soup.find("div", class_="app")
+                        if app_div:
+                            spans = [
+                                span.get_text(strip=True)
+                                for span in app_div.find_all("span")
+                            ]
+                            if spans:
+                                collected["app"] = spans[0]
+            except (aiohttp.ClientProxyConnectionError, aiohttp.ClientHttpProxyError):
+                raise
+            except Exception:
+                pass
+        return collected
+
+    @filter.command("jm", alias={"禁漫天堂"})
+    async def jm_command(self, event: AstrMessageEvent):
+        """获取禁漫天堂的网址和APP下载地址"""
+        try:
+            links = await self._find_jm_links(self.session_factory)
+        except (aiohttp.ClientProxyConnectionError, aiohttp.ClientHttpProxyError):
+            logger.warning("[JM] 代理连接失败，回退直连获取网址...")
+            links = await self._find_jm_links(aiohttp.ClientSession)
+        sites = links.get("sites") or []
+        app = links.get("app")
+        if sites or app:
+            parts = ["📖 成功找到禁漫天堂最新网址："]
+            if sites:
+                parts.append(random.choice(sites))
+            if app:
+                parts.append(f"📱 APP下载：{app}")
+            yield event.plain_result("\n".join(parts))
+        else:
+            yield event.plain_result("❌ 抱歉，禁漫天堂导航站目前无法访问。")
+
     @filter.command("sis", alias={"第一会所"})
     async def sis_command(self, event: AstrMessageEvent):
         """获取第一会所的网址"""
