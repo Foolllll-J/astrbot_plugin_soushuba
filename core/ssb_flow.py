@@ -1,11 +1,10 @@
 import aiohttp
-import asyncio
 from astrbot.api import logger
 
 from .cache import UserSearchCache, SsbSearchItem, SsbAttachment
-from .http_session import ProxyError
+from .http_session import NETWORK_ERRORS, ProxyError
 from .search_service import SearchService
-from .download_service import SsbDownloadService
+from .download_service import SsbDownloadService, SsbShellChallenge
 
 
 class SsbFlow:
@@ -16,15 +15,20 @@ class SsbFlow:
         cache: UserSearchCache,
         target_domains: list[str],
         session_factory,
+        direct_session_factory,
     ):
         self.search_service = search_service
         self.download_service = download_service
         self.cache = cache
         self.target_domains = target_domains
         self.session_factory = session_factory
+        self.direct_session_factory = direct_session_factory
 
     def _get_user_id(self, event) -> str:
         return str(event.get_sender_id())
+
+    def _has_proxy(self) -> bool:
+        return bool(getattr(self.session_factory, "proxy_url", "") or "")
 
     def _is_index_arg(self, arg: str) -> bool:
         return arg.isdigit()
@@ -36,25 +40,23 @@ class SsbFlow:
         await event.send(event.plain_result(text))
 
     async def _exec_ssb_search(self, keyword: str):
-        """Execute ssb_search with proxy fallback + cache refresh on connection error."""
+        """Execute ssb_search with direct-first, proxy fallback + cache refresh on connection error."""
         for attempt in range(2):
             try:
                 try:
+                    async with self.direct_session_factory() as session:
+                        return await self.search_service.ssb_search(
+                            session, keyword, self.target_domains
+                        )
+                except NETWORK_ERRORS:
+                    if not self._has_proxy():
+                        raise
+                    logger.warning("[SSB] 直连搜索失败，回退代理搜索...")
                     async with self.session_factory() as session:
                         return await self.search_service.ssb_search(
                             session, keyword, self.target_domains
                         )
-                except ProxyError:
-                    logger.warning("[SSB] 代理连接失败，回退直连搜索...")
-                    async with aiohttp.ClientSession() as session:
-                        return await self.search_service.ssb_search(
-                            session, keyword, self.target_domains
-                        )
-            except (
-                aiohttp.ClientConnectorError,
-                aiohttp.ClientResponseError,
-                asyncio.TimeoutError,
-            ) as e:
+            except NETWORK_ERRORS as e:
                 if attempt == 0:
                     logger.warning(
                         f"[SSB] 请求失败({e})，可能网址已变更，尝试刷新缓存..."
@@ -149,15 +151,44 @@ class SsbFlow:
                 return
             post = items[index - 1]
         logger.debug(f"[SSB 选择] 用户 {user_id} 选择帖子: {post.title} {post.link}")
-        try:
-            async with self.session_factory() as session:
-                results = await self._exec_post_selection(session, event, post, user_id)
-        except ProxyError:
-            logger.warning("[SSB] 代理连接失败，回退直连获取帖子信息...")
-            async with aiohttp.ClientSession() as session:
-                results = await self._exec_post_selection(session, event, post, user_id)
+        results, err = await self._exec_post_selection_with_fallback(
+            event, post, user_id
+        )
+        if err is not None:
+            yield event.plain_result(err)
+            return
         for result in results:
             yield result
+
+    async def _exec_post_selection_with_fallback(self, event, post, user_id):
+        """直连优先，异常回退代理。返回 (results, None) 或 (None, 错误文案)。"""
+        shell_on_direct = False
+        try:
+            async with self.direct_session_factory() as session:
+                return (
+                    await self._exec_post_selection(session, event, post, user_id),
+                    None,
+                )
+        except SsbShellChallenge:
+            shell_on_direct = True
+        except NETWORK_ERRORS:
+            shell_on_direct = False
+        if not self._has_proxy():
+            if shell_on_direct:
+                return None, "❌ 被站点拦截，无法解析出附件"
+            raise
+        logger.warning(
+            "[SSB] 直连%s，回退代理获取帖子信息...",
+            "被 JS 验证拦截" if shell_on_direct else "网络异常",
+        )
+        try:
+            async with self.session_factory() as session:
+                return (
+                    await self._exec_post_selection(session, event, post, user_id),
+                    None,
+                )
+        except SsbShellChallenge:
+            return None, "❌ 被站点拦截，无法解析出附件"
 
     async def _exec_attachment_selection(
         self, session, event, index, user_id, attachments
@@ -205,13 +236,28 @@ class SsbFlow:
             return
 
         try:
-            async with self.session_factory() as session:
+            async with self.direct_session_factory() as session:
                 results = await self._exec_attachment_selection(
                     session, event, index, user_id, attachments
                 )
-        except ProxyError:
-            logger.warning("[SSB] 代理连接失败，回退直连下载附件...")
-            async with aiohttp.ClientSession() as session:
+        except SsbShellChallenge:
+            if not self._has_proxy():
+                yield event.plain_result("❌ 被站点拦截，无法下载附件")
+                return
+            logger.warning("[SSB] 直连被 JS 验证拦截，回退代理下载附件...")
+            try:
+                async with self.session_factory() as session:
+                    results = await self._exec_attachment_selection(
+                        session, event, index, user_id, attachments
+                    )
+            except SsbShellChallenge:
+                yield event.plain_result("❌ 被站点拦截，无法下载附件")
+                return
+        except NETWORK_ERRORS:
+            if not self._has_proxy():
+                raise
+            logger.warning("[SSB] 直连网络异常，回退代理下载附件...")
+            async with self.session_factory() as session:
                 results = await self._exec_attachment_selection(
                     session, event, index, user_id, attachments
                 )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 from collections.abc import Callable
+import asyncio
 import aiohttp
 
 
@@ -9,6 +10,15 @@ class ProxyError(Exception):
     def __init__(self, message: str, original_exc: BaseException | None = None):
         super().__init__(message)
         self.original_exc = original_exc
+
+
+# 网络层异常集合：直连失败/响应异常/超时
+NETWORK_ERRORS = (
+    aiohttp.ClientConnectorError,
+    aiohttp.ClientConnectionError,
+    aiohttp.ClientResponseError,
+    asyncio.TimeoutError,
+)
 
 
 def is_definitely_proxy_error(exc: BaseException) -> bool:
@@ -68,4 +78,10 @@ def build_session_factory(
     def _factory(*args, **kwargs) -> ProxyClientSession:
         return ProxyClientSession(*args, proxy_url=proxy_url, **kwargs)
 
+    _factory.proxy_url = proxy_url
     return _factory
+
+
+def build_direct_session_factory() -> Callable[..., aiohttp.ClientSession]:
+    """直连会话工厂（不注入任何代理）。"""
+    return aiohttp.ClientSession

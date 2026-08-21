@@ -13,7 +13,11 @@ import astrbot.api.message_components as Comp
 from .core.url_resolver import UrlResolver
 from .core.search_service import SearchService
 from .core.download_service import SsbDownloadService
-from .core.http_session import build_session_factory, ProxyError
+from .core.http_session import (
+    build_session_factory,
+    build_direct_session_factory,
+    ProxyError,
+)
 from .core.ssb_flow import SsbFlow
 from .core.sxsy_flow import SxsyFlow
 from .core.site_monitor import SiteMonitorService
@@ -50,6 +54,7 @@ class SoushuBaLinkExtractorPlugin(Star):
             self.DEFAULT_MONITOR_FAILURE_RECHECK_DELAY,
         )
         self.session_factory = build_session_factory(self.plugin_config)
+        self.direct_session_factory = build_direct_session_factory()
 
         self.data_dir = StarTools.get_data_dir("astrbot_plugin_soushuba")
         os.makedirs(self.data_dir, exist_ok=True)
@@ -82,6 +87,7 @@ class SoushuBaLinkExtractorPlugin(Star):
             self.ssb_cache,
             self.target_domains,
             self.session_factory,
+            self.direct_session_factory,
         )
         self.sxsy_cache = UserSearchCache()
         self.sxsy_flow = SxsyFlow(
@@ -89,6 +95,7 @@ class SoushuBaLinkExtractorPlugin(Star):
             self.ssb_download,
             self.sxsy_cache,
             self.session_factory,
+            self.direct_session_factory,
         )
         self.site_monitor = SiteMonitorService(
             url_resolver=self.url_resolver,

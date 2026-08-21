@@ -1,7 +1,7 @@
 name: astrbot_plugin_soushuba
 display_name: 搜书吧助手
 desc: 获取搜书吧等小说网站最新可用网址，支持搜索与下载。
-version: v1.4.1
+version: v1.4.2
 author: Foolllll
 author_url: https://github.com/Foolllll-J
 repo: https://github.com/Foolllll-J/astrbot_plugin_soushuba

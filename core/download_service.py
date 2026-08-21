@@ -23,6 +23,10 @@ from .url_resolver import UrlResolver
 from .search_service import SearchService
 
 
+class SsbShellChallenge(Exception):
+    """站点返回 JS 验证壳页面，附件无法解析，需切换网络连接方式重试。"""
+
+
 class SsbDownloadService:
     def __init__(
         self,
@@ -664,11 +668,41 @@ console.log(JSON.stringify(captured));
     def _needs_reply_unlock(self, html: str) -> bool:
         return "如果您要查看本帖隐藏内容请" in html
 
+    def _is_shell_page(self, html: str) -> bool:
+        """检测站点是否返回了 JS 验证壳页面（反爬拦截），而非真实帖子页。"""
+        if not html:
+            return False
+        raw_lower = html.lower()
+        strong_tokens = (
+            "cloudflareinsights",
+            "cf-chl-",
+            "challenge-platform",
+            "js_challenge",
+            "function getname",
+            "location.assign",
+            "location.replace",
+            "window.location",
+        )
+        token_hit = [t for t in strong_tokens if t in raw_lower]
+        if "<html" in raw_lower:
+            return False
+        stripped = html.lstrip()
+        small_script = len(html) < 30000 and stripped.startswith("<script")
+        obfuscated = bool(
+            re.search(r"=function\([^)]*\)\{['\"][^'\"]*['\"];", html)
+            or re.search(r"\{['\"][^'\"]*['\"];var _\w+=function", html)
+        )
+        location_like = "location" in raw_lower or "assign" in raw_lower
+        return bool(token_hit) or (small_script and (obfuscated or location_like))
+
     async def fetch_post_attachments(
         self, session: aiohttp.ClientSession, post_url: str
     ) -> tuple[list[SsbAttachment], str]:
         logger.debug(f"[SSB 下载] 抓取帖子附件: {post_url}")
         html, final_url = await self._fetch_post_html(session, post_url)
+        if self._is_shell_page(html):
+            logger.warning("[SSB 下载] 检测到 JS 验证壳页面，无法解析附件")
+            raise SsbShellChallenge()
         attachments = await self._parse_attachments_with_retry(
             session, html, final_url, post_url
         )
@@ -1626,9 +1660,14 @@ console.log(JSON.stringify(captured));
             ) as resp:
                 final_url = str(resp.url)
                 html = await self.url_resolver.get_text(resp)
+                if self._is_shell_page(html):
+                    logger.warning("[SSB 下载] 登录校验页被 JS 验证拦截")
+                    raise SsbShellChallenge()
                 if "登录" not in final_url and username in html:
                     logger.debug(f"[SSB 下载] Cookie 验证有效: {username}")
                     return True, "已登录"
+        except SsbShellChallenge:
+            raise
         except Exception as e:
             logger.warning(f"[SSB 下载] Cookie 验证异常: {e}")
 
@@ -1652,6 +1691,9 @@ console.log(JSON.stringify(captured));
         html = ""
         if post_url:
             html, final_url = await self._fetch_post_html(session, post_url)
+            if self._is_shell_page(html):
+                logger.warning("[SSB 下载] 下载时帖子页被 JS 验证拦截")
+                raise SsbShellChallenge()
 
         if attachment.aid and html:
             resolved = self._extract_download_url(html, post_url, attachment.aid)

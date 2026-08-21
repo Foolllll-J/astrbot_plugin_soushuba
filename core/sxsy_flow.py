@@ -2,7 +2,7 @@ import aiohttp
 from astrbot.api import logger
 
 from .cache import UserSearchCache, SsbSearchItem, SsbAttachment
-from .http_session import ProxyError
+from .http_session import NETWORK_ERRORS
 from .search_service import SearchService
 from .download_service import SsbDownloadService
 
@@ -14,14 +14,19 @@ class SxsyFlow:
         download_service: SsbDownloadService,
         cache: UserSearchCache,
         session_factory,
+        direct_session_factory,
     ):
         self.search_service = search_service
         self.download_service = download_service
         self.cache = cache
         self.session_factory = session_factory
+        self.direct_session_factory = direct_session_factory
 
     def _get_user_id(self, event) -> str:
         return str(event.get_sender_id())
+
+    def _has_proxy(self) -> bool:
+        return bool(getattr(self.session_factory, "proxy_url", "") or "")
 
     def _is_index_arg(self, arg: str) -> bool:
         return arg.isdigit()
@@ -34,11 +39,13 @@ class SxsyFlow:
 
     async def _exec_sxsy_search(self, keyword: str):
         try:
-            async with self.session_factory() as session:
+            async with self.direct_session_factory() as session:
                 return await self.search_service.sxsy_search(session, keyword)
-        except ProxyError:
-            logger.warning("[SXSY] 代理连接失败，回退直连搜索...")
-            async with aiohttp.ClientSession() as session:
+        except NETWORK_ERRORS:
+            if not self._has_proxy():
+                raise
+            logger.warning("[SXSY] 直连搜索失败，回退代理搜索...")
+            async with self.session_factory() as session:
                 return await self.search_service.sxsy_search(session, keyword)
 
     async def _handle_search(self, event, keyword: str):
@@ -104,11 +111,13 @@ class SxsyFlow:
             post = items[index - 1]
 
         try:
-            async with self.session_factory() as session:
+            async with self.direct_session_factory() as session:
                 results = await self._exec_post_selection(session, event, post, user_id)
-        except ProxyError:
-            logger.warning("[SXSY] 代理连接失败，回退直连获取帖子信息...")
-            async with aiohttp.ClientSession() as session:
+        except NETWORK_ERRORS:
+            if not self._has_proxy():
+                raise
+            logger.warning("[SXSY] 直连获取帖子信息失败，回退代理...")
+            async with self.session_factory() as session:
                 results = await self._exec_post_selection(session, event, post, user_id)
         for result in results:
             yield result
@@ -149,13 +158,15 @@ class SxsyFlow:
             return
 
         try:
-            async with self.session_factory() as session:
+            async with self.direct_session_factory() as session:
                 results = await self._exec_attachment_selection(
                     session, event, index, user_id, attachments
                 )
-        except ProxyError:
-            logger.warning("[SXSY] 代理连接失败，回退直连下载附件...")
-            async with aiohttp.ClientSession() as session:
+        except NETWORK_ERRORS:
+            if not self._has_proxy():
+                raise
+            logger.warning("[SXSY] 直连下载网络异常，回退代理下载附件...")
+            async with self.session_factory() as session:
                 results = await self._exec_attachment_selection(
                     session, event, index, user_id, attachments
                 )
