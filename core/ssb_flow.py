@@ -136,7 +136,7 @@ class SsbFlow:
         if not self.search_service.is_download_allowed(
             self._get_user_id(event), event.is_admin()
         ):
-            yield event.plain_result("抱歉，你没有权限使用下载附件功能。")
+            yield event.plain_result("你没有下载权限")
             return
         user_id = self._get_user_id(event)
         if post is None:
@@ -227,7 +227,7 @@ class SsbFlow:
         if not self.search_service.is_download_allowed(
             self._get_user_id(event), event.is_admin()
         ):
-            yield event.plain_result("抱歉，你没有权限使用下载附件功能。")
+            yield event.plain_result("你没有下载权限")
             return
         user_id = self._get_user_id(event)
         attachments = self.cache.get_pending_attachments(user_id)

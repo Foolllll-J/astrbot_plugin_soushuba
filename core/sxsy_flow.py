@@ -1,3 +1,5 @@
+import asyncio
+
 import aiohttp
 from astrbot.api import logger
 
@@ -63,11 +65,18 @@ class SxsyFlow:
         attachments, reason = await self.download_service.fetch_sxsy_post_attachments(
             session, post.link
         )
+        if not attachments and reason == "未解析到附件":
+            await asyncio.sleep(2)
+            (
+                attachments,
+                reason,
+            ) = await self.download_service.fetch_sxsy_post_attachments(
+                session, post.link
+            )
         if not attachments:
             msg = reason or "未解析到附件，可能帖子无附件或 Cookie 已失效。"
-            return [
-                event.plain_result(f"❌ {msg}")
-            ]
+            results.append(event.plain_result(f"❌ {msg}"))
+            return results
 
         if len(attachments) == 1:
             await self._send_plain_immediately(event, "检测到 1 个附件，开始下载...")
@@ -95,7 +104,7 @@ class SxsyFlow:
         if not self.search_service.is_download_allowed(
             self._get_user_id(event), event.is_admin()
         ):
-            yield event.plain_result("抱歉，你没有权限使用下载附件功能。")
+            yield event.plain_result("你没有下载权限")
             return
         user_id = self._get_user_id(event)
         if post is None:
@@ -149,7 +158,7 @@ class SxsyFlow:
         if not self.search_service.is_download_allowed(
             self._get_user_id(event), event.is_admin()
         ):
-            yield event.plain_result("抱歉，你没有权限使用下载附件功能。")
+            yield event.plain_result("你没有下载权限")
             return
         user_id = self._get_user_id(event)
         attachments = self.cache.get_pending_attachments(user_id)

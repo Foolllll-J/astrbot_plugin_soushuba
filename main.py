@@ -176,9 +176,13 @@ class SoushuBaLinkExtractorPlugin(Star):
                 ]
                 yield event.chain_result(chain)
                 return
-            yield event.plain_result(
-                "❌ 抱歉，尚香书苑导航站目前无法访问或未找到导航图。"
-            )
+            failure_message = "❌ 抱歉，尚香书苑导航站目前无法访问或未找到导航图。"
+            configured_url = self._get_sxsy_search_base_url()
+            if configured_url:
+                failure_message += (
+                    f"\n📌 可供参考的地址：{configured_url}"
+                )
+            yield event.plain_result(failure_message)
             return
 
         arg = args[1].strip()

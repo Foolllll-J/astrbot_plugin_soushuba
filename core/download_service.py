@@ -45,6 +45,11 @@ class SsbDownloadService:
         self.search_service = search_service
         self.auth_cfg = auth_cfg or {}
         self.download_cfg = download_cfg or {}
+        self.block_attachment_exts = {
+            str(ext).strip().lstrip(".").lower()
+            for ext in (self.download_cfg.get("block_attachment_exts") or [])
+            if str(ext).strip()
+        }
         self.download_dir = os.path.join(self.data_dir, "downloads", "ssb")
         os.makedirs(self.download_dir, exist_ok=True)
         self.download_sxsy_dir = os.path.join(self.data_dir, "downloads", "sxsy")
@@ -60,6 +65,12 @@ class SsbDownloadService:
         name = name.strip().replace("\u3000", " ")
         name = re.sub(r"[\\/:*?\"<>|]+", "_", name)
         return name or "attachment"
+
+    def _is_blocked_attachment(self, name: str) -> bool:
+        if not self.block_attachment_exts:
+            return False
+        match = re.search(r"\.([A-Za-z0-9]{1,8})$", name.strip())
+        return bool(match and match.group(1).lower() in self.block_attachment_exts)
 
     def _get_user_coin_limit(self) -> int:
         raw = self.download_cfg.get("daily_user_coin_limit", 0)
@@ -808,7 +819,22 @@ console.log(JSON.stringify(captured));
             merged[key] = item
             deduped.append(item)
 
-        return deduped
+        # Filter after dedup: the same attachment may appear under a generic
+        # anchor like "下载附件"; the merged best name carries the extension.
+        blocked_aids = {
+            item.aid
+            for item in deduped
+            if item.aid and self._is_blocked_attachment(item.name)
+        }
+        result: List[SsbAttachment] = []
+        for item in deduped:
+            if self._is_blocked_attachment(item.name) or (
+                item.aid and item.aid in blocked_aids
+            ):
+                logger.debug(f"[SSB 下载] 按后缀过滤附件: {item.name}")
+                continue
+            result.append(item)
+        return result
 
     def _parse_formhash(self, html: str) -> Optional[str]:
         match = re.search(r'name="formhash"\s+value="([a-f0-9]+)"', html)
@@ -998,6 +1024,24 @@ console.log(JSON.stringify(captured));
                         pay_url=full_url,
                     )
                 )
+
+        # Filter after dedup: the same attachment may appear under a generic
+        # anchor like "下载附件"; the merged best name carries the extension.
+        blocked_aids = {
+            item.aid
+            for item in deduped
+            if item.aid and self._is_blocked_attachment(item.name)
+        }
+        filtered: List[SsbAttachment] = []
+        for item in deduped:
+            if self._is_blocked_attachment(item.name) or (
+                item.aid and item.aid in blocked_aids
+            ):
+                logger.debug(f"[SXSY 下载] 按后缀过滤附件: {item.name}")
+                continue
+            filtered.append(item)
+        deduped = filtered
+
         pay_count = sum(1 for x in deduped if x.pay_url)
         direct_count = sum(1 for x in deduped if x.download_url)
         aid_count = sum(1 for x in deduped if x.aid)

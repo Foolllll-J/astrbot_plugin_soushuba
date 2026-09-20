@@ -96,6 +96,20 @@
                 "hint": "开启后搜书吧付费附件优先走免银币直链，失败自动回退购买。关闭则始终走付费购买。",
                 "default": false
             },
+            "block_attachment_exts": {
+                "description": "按后缀过滤附件",
+                "type": "list",
+                "hint": "文件名以此类后缀结尾的附件会被忽略。留空表示不过滤。",
+                "default": [
+                    "jpg",
+                    "jpeg",
+                    "png",
+                    "gif",
+                    "webp",
+                    "bmp",
+                    "ico"
+                ]
+            },
             "auto_zip_enabled": {
                 "description": "发送失败自动打包 ZIP",
                 "type": "bool",
