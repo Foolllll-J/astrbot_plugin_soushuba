@@ -45,17 +45,23 @@ class SsbFlow:
             try:
                 try:
                     async with self.direct_session_factory() as session:
-                        return await self.search_service.ssb_search(
+                        result = await self.search_service.ssb_search(
                             session, keyword, self.target_domains
                         )
+                        if (
+                            result[1] != SearchService.SSB_URL_NOT_FOUND_MESSAGE
+                            or not self._has_proxy()
+                        ):
+                            return result
+                        logger.warning("[SSB] 直连未找到有效网址，回退代理搜索...")
                 except NETWORK_ERRORS:
                     if not self._has_proxy():
                         raise
                     logger.warning("[SSB] 直连搜索失败，回退代理搜索...")
-                    async with self.session_factory() as session:
-                        return await self.search_service.ssb_search(
-                            session, keyword, self.target_domains
-                        )
+                async with self.session_factory() as session:
+                    return await self.search_service.ssb_search(
+                        session, keyword, self.target_domains
+                    )
             except NETWORK_ERRORS as e:
                 if attempt == 0:
                     logger.warning(
@@ -79,7 +85,7 @@ class SsbFlow:
                     session, self.target_domains, force_refresh=True
                 )
 
-    async def _exec_post_selection(self, session, event, post, user_id):
+    async def _exec_post_selection(self, session, event, post, user_id, progress_sent):
         """Run post-selection logic with a given session. Returns list of results."""
         results = []
         base_url = self.download_service.url_resolver.normalize_base_url(post.link)
@@ -93,11 +99,14 @@ class SsbFlow:
         )
         if not attachments:
             if fail_reason:
-                return [event.plain_result(f"❌ {fail_reason}")]
+                icon = "💰" if fail_reason.startswith("该帖子为悬赏帖") else "❌"
+                return [event.plain_result(f"{icon} {fail_reason}")]
             return [event.plain_result("❌ 未解析到附件")]
 
         if len(attachments) == 1:
-            await self._send_plain_immediately(event, "检测到 1 个附件，开始下载...")
+            if not progress_sent[0]:
+                progress_sent[0] = True
+                await self._send_plain_immediately(event, "检测到 1 个附件，开始下载...")
             download_results = await self._download_and_send(
                 event, session, attachments[0]
             )
@@ -163,10 +172,13 @@ class SsbFlow:
     async def _exec_post_selection_with_fallback(self, event, post, user_id):
         """直连优先，异常回退代理。返回 (results, None) 或 (None, 错误文案)。"""
         shell_on_direct = False
+        progress_sent = [False]
         try:
             async with self.direct_session_factory() as session:
                 return (
-                    await self._exec_post_selection(session, event, post, user_id),
+                    await self._exec_post_selection(
+                        session, event, post, user_id, progress_sent
+                    ),
                     None,
                 )
         except SsbShellChallenge:
@@ -184,14 +196,16 @@ class SsbFlow:
         try:
             async with self.session_factory() as session:
                 return (
-                    await self._exec_post_selection(session, event, post, user_id),
+                    await self._exec_post_selection(
+                        session, event, post, user_id, progress_sent
+                    ),
                     None,
                 )
         except SsbShellChallenge:
             return None, "❌ 被站点拦截，无法解析出附件"
 
     async def _exec_attachment_selection(
-        self, session, event, index, user_id, attachments
+        self, session, event, index, user_id, attachments, progress_sent
     ):
         """Run attachment-selection logic with a given session. Returns list of results."""
         results = []
@@ -205,9 +219,11 @@ class SsbFlow:
                 self.cache.clear_pending_attachments(user_id)
                 return [event.plain_result(f"❌ {msg}")]
         if index == 0:
-            await self._send_plain_immediately(
-                event, f"开始下载全部附件，共 {len(attachments)} 个..."
-            )
+            if not progress_sent[0]:
+                progress_sent[0] = True
+                await self._send_plain_immediately(
+                    event, f"开始下载全部附件，共 {len(attachments)} 个..."
+                )
             for att in attachments:
                 download_results = await self._download_and_send(event, session, att)
                 results.extend(download_results)
@@ -235,10 +251,11 @@ class SsbFlow:
             yield event.plain_result("当前没有待选择的附件，请先选择帖子。")
             return
 
+        progress_sent = [False]
         try:
             async with self.direct_session_factory() as session:
                 results = await self._exec_attachment_selection(
-                    session, event, index, user_id, attachments
+                    session, event, index, user_id, attachments, progress_sent
                 )
         except SsbShellChallenge:
             if not self._has_proxy():
@@ -248,7 +265,7 @@ class SsbFlow:
             try:
                 async with self.session_factory() as session:
                     results = await self._exec_attachment_selection(
-                        session, event, index, user_id, attachments
+                        session, event, index, user_id, attachments, progress_sent
                     )
             except SsbShellChallenge:
                 yield event.plain_result("❌ 被站点拦截，无法下载附件")
@@ -259,7 +276,7 @@ class SsbFlow:
             logger.warning("[SSB] 直连网络异常，回退代理下载附件...")
             async with self.session_factory() as session:
                 results = await self._exec_attachment_selection(
-                    session, event, index, user_id, attachments
+                    session, event, index, user_id, attachments, progress_sent
                 )
         for result in results:
             yield result

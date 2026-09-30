@@ -19,6 +19,7 @@ class UrlResolver:
         self.auth_cfg = auth_cfg or {}
         self.target_domains = target_domains
         self._ssb_url_cache: str | None = None
+        self._ssb_url_lock = asyncio.Lock()
 
     def invalidate_ssb_url_cache(self):
         self._ssb_url_cache = None
@@ -175,15 +176,24 @@ class UrlResolver:
     ) -> Optional[str]:
         if not force_refresh and self._ssb_url_cache:
             return self._ssb_url_cache
-        for domain_url in self.target_domains:
-            link_url = await self.extract_link_from_url(session, domain_url)
-            if link_url:
-                url = self.normalize_base_url(link_url)
-                if url != self._ssb_url_cache:
-                    logger.debug(f"[SSB 网址缓存] 更新: {self._ssb_url_cache} -> {url}")
-                self._ssb_url_cache = url
-                return url
-        return None
+        async with self._ssb_url_lock:
+            if not force_refresh and self._ssb_url_cache:
+                return self._ssb_url_cache
+            navigation_urls = {
+                self.normalize_base_url(domain_url) for domain_url in self.target_domains
+            }
+            for domain_url in self.target_domains:
+                link_url = await self.extract_link_from_url(session, domain_url)
+                if link_url:
+                    url = self.normalize_base_url(link_url)
+                    if url in navigation_urls:
+                        logger.warning(f"[SSB 网址解析] 忽略导航站自身链接: {url}")
+                        continue
+                    if url != self._ssb_url_cache:
+                        logger.debug(f"[SSB 网址缓存] 更新: {self._ssb_url_cache} -> {url}")
+                    self._ssb_url_cache = url
+                    return url
+            return None
 
     async def resolve_sxsy_monitor_url(
         self, session: aiohttp.ClientSession

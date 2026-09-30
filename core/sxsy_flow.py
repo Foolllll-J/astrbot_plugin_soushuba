@@ -60,7 +60,7 @@ class SxsyFlow:
         self.cache.set_search_items(user_id, items)
         logger.debug(f"[SXSY 缓存] 用户 {user_id} 缓存搜索结果 {len(items)} 条")
 
-    async def _exec_post_selection(self, session, event, post, user_id):
+    async def _exec_post_selection(self, session, event, post, user_id, progress_sent):
         results = []
         attachments, reason = await self.download_service.fetch_sxsy_post_attachments(
             session, post.link
@@ -75,11 +75,14 @@ class SxsyFlow:
             )
         if not attachments:
             msg = reason or "未解析到附件，可能帖子无附件或 Cookie 已失效。"
-            results.append(event.plain_result(f"❌ {msg}"))
+            icon = "💰" if msg.startswith("该帖子为悬赏帖") else "❌"
+            results.append(event.plain_result(f"{icon} {msg}"))
             return results
 
         if len(attachments) == 1:
-            await self._send_plain_immediately(event, "检测到 1 个附件，开始下载...")
+            if not progress_sent[0]:
+                progress_sent[0] = True
+                await self._send_plain_immediately(event, "检测到 1 个附件，开始下载...")
             download_results = await self._download_and_send(
                 event, session, attachments[0]
             )
@@ -119,26 +122,33 @@ class SxsyFlow:
                 return
             post = items[index - 1]
 
+        progress_sent = [False]
         try:
             async with self.direct_session_factory() as session:
-                results = await self._exec_post_selection(session, event, post, user_id)
+                results = await self._exec_post_selection(
+                    session, event, post, user_id, progress_sent
+                )
         except NETWORK_ERRORS:
             if not self._has_proxy():
                 raise
             logger.warning("[SXSY] 直连获取帖子信息失败，回退代理...")
             async with self.session_factory() as session:
-                results = await self._exec_post_selection(session, event, post, user_id)
+                results = await self._exec_post_selection(
+                    session, event, post, user_id, progress_sent
+                )
         for result in results:
             yield result
 
     async def _exec_attachment_selection(
-        self, session, event, index, user_id, attachments
+        self, session, event, index, user_id, attachments, progress_sent
     ):
         results = []
         if index == 0:
-            await self._send_plain_immediately(
-                event, f"开始下载全部附件，共 {len(attachments)} 个..."
-            )
+            if not progress_sent[0]:
+                progress_sent[0] = True
+                await self._send_plain_immediately(
+                    event, f"开始下载全部附件，共 {len(attachments)} 个..."
+                )
             for att in attachments:
                 download_results = await self._download_and_send(event, session, att)
                 results.extend(download_results)
@@ -166,10 +176,11 @@ class SxsyFlow:
             yield event.plain_result("当前没有待选择的附件，请先选择帖子。")
             return
 
+        progress_sent = [False]
         try:
             async with self.direct_session_factory() as session:
                 results = await self._exec_attachment_selection(
-                    session, event, index, user_id, attachments
+                    session, event, index, user_id, attachments, progress_sent
                 )
         except NETWORK_ERRORS:
             if not self._has_proxy():
@@ -177,7 +188,7 @@ class SxsyFlow:
             logger.warning("[SXSY] 直连下载网络异常，回退代理下载附件...")
             async with self.session_factory() as session:
                 results = await self._exec_attachment_selection(
-                    session, event, index, user_id, attachments
+                    session, event, index, user_id, attachments, progress_sent
                 )
         for result in results:
             yield result

@@ -17,6 +17,7 @@ from .http_session import ProxyError
 
 
 class SearchService:
+    SSB_URL_NOT_FOUND_MESSAGE = " 无法获取搜书吧最新网址，请稍后再试。"
     SSB_LOGIN_RETRY_ATTEMPTS = 2
     SSB_LOGIN_RETRY_DELAY = 1.0
     SXSY_SEARCH_RETRY_ATTEMPTS = 2
@@ -445,7 +446,7 @@ class SearchService:
         except ProxyError:
             raise
         if not base_url:
-            return False, " 无法获取搜书吧最新网址，请稍后再试。", []
+            return False, self.SSB_URL_NOT_FOUND_MESSAGE, []
 
         parsed = urlparse(base_url)
         base_url = f"{parsed.scheme}://{parsed.netloc}/"
